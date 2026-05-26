@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vite/
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+.playwright-cli/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Env
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Git worktrees
+.worktrees/
+.superpowers/
+.claude/worktrees/
