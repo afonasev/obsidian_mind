@@ -76,13 +76,14 @@ Archive a completed change in the experimental workflow.
    mv openspec/changes/<name> openspec/changes/archive/YYYY-MM-DD-<name>
    ```
 
-6. **Auto-commit the archive**
+6. **Auto-commit and push the archive**
 
    - Run `git status` and `git diff --staged` + `git diff` to see what will be committed.
-   - If there is nothing to commit, skip this step and report "Nothing to commit".
+   - If there is nothing to commit, skip the commit and report "Nothing to commit"; also skip the push.
    - Otherwise stage the relevant changed/untracked files explicitly by path (never `git add -A`/`.`; skip `.env`, secrets, large binaries). Include the archive move, any synced spec changes, and pending implementation changes for this change.
    - Create a single commit using the standard project format with a HEREDOC body, ending with the `Co-Authored-By` trailer required by the global commit protocol. Subject should reference the change name, e.g. `<change-name>: archive`.
-   - Do NOT push. Do NOT use `--no-verify` or `--amend`. If the pre-commit hook fails, report the failure and stop — do not retry blindly.
+   - After a successful commit, push to the tracked remote with `git push` (the current branch tracks `origin/main`). If the branch has no upstream yet, use `git push -u origin <current-branch>`. If no remote is configured at all, skip the push and note "No remote configured" — do not fail the archive.
+   - Do NOT use `--no-verify` or `--amend`. If the pre-commit or pre-push hook fails, report the failure and stop — do not retry blindly and do not auto-bypass hooks. (If the user later wants to push past an unrelated hook failure, they can ask explicitly.)
    - Do NOT ask the user for confirmation.
 
 7. **Display summary**
@@ -92,6 +93,7 @@ Archive a completed change in the experimental workflow.
    - Schema that was used
    - Archive location
    - Spec sync status (synced / sync skipped / no delta specs)
+   - Push status (pushed to `origin/main` / nothing to commit / no remote / hook failed)
    - Note about any warnings (incomplete artifacts/tasks)
 
 **Output On Success**
@@ -103,6 +105,7 @@ Archive a completed change in the experimental workflow.
 **Schema:** <schema-name>
 **Archived to:** openspec/changes/archive/YYYY-MM-DD-<name>/
 **Specs:** ✓ Synced to main specs
+**Pushed:** ✓ origin/main
 
 All artifacts complete. All tasks complete.
 ```
@@ -116,6 +119,7 @@ All artifacts complete. All tasks complete.
 **Schema:** <schema-name>
 **Archived to:** openspec/changes/archive/YYYY-MM-DD-<name>/
 **Specs:** No delta specs
+**Pushed:** ✓ origin/main
 
 All artifacts complete. All tasks complete.
 ```

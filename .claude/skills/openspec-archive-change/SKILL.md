@@ -73,13 +73,24 @@ Archive a completed change in the experimental workflow.
 
    If the command fails because the target archive directory already exists, suggest renaming the existing archive or using a different date.
 
-6. **Display summary**
+6. **Auto-commit and push the archive**
+
+   - Run `git status` + `git diff` to see what `openspec archive` changed (the merged main specs and the moved change directory).
+   - If there is nothing to commit, skip the commit and push; report "Nothing to commit".
+   - Otherwise stage the relevant changed/untracked files explicitly by path (never `git add -A`/`.`; skip `.env`, secrets, large binaries).
+   - Create a single commit using the standard project format with a HEREDOC body, ending with the `Co-Authored-By` trailer required by the global commit protocol. Subject: `<change-name>: archive`.
+   - After a successful commit, push with `git push` (the current branch tracks `origin/main`; if no upstream yet, use `git push -u origin <current-branch>`). If no remote is configured, skip the push and note "No remote configured" — do not fail the archive.
+   - Do NOT use `--no-verify` or `--amend`. If the pre-commit or pre-push hook fails, report the failure and stop — do not retry blindly or auto-bypass hooks.
+   - Do NOT ask the user for confirmation.
+
+7. **Display summary**
 
    Show archive completion summary including:
    - Change name
    - Schema that was used
    - Archive location
    - Whether specs were synced (if applicable)
+   - Push status (pushed to `origin/main` / nothing to commit / no remote / hook failed)
    - Note about any warnings (incomplete artifacts/tasks)
 
 **Output On Success**
@@ -91,6 +102,7 @@ Archive a completed change in the experimental workflow.
 **Schema:** <schema-name>
 **Archived to:** openspec/changes/archive/YYYY-MM-DD-<name>/
 **Specs:** ✓ Synced to main specs (or "No delta specs" or "Sync skipped")
+**Pushed:** ✓ origin/main
 
 All artifacts complete. All tasks complete.
 ```
@@ -101,3 +113,4 @@ All artifacts complete. All tasks complete.
 - Don't block archive on warnings - just inform and confirm
 - Show clear summary of what happened
 - Let `openspec archive` perform both the spec merge and the directory move — do not mkdir/mv by hand, and do not pre-sync with the agent-driven `openspec-sync-specs` skill.
+- After archiving, commit and push the result; never auto-bypass a failing pre-commit/pre-push hook.
