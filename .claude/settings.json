@@ -11,7 +11,18 @@
       "Bash(uv sync:*)"
     ]
   },
-  "hooks": {},
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/effort-advisor.py\""
+          }
+        ]
+      }
+    ]
+  },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": false,
     "playwright@claude-plugins-official": false,
