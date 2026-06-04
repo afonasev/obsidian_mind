@@ -14,7 +14,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { type JSX, type MouseEvent, useCallback, useEffect, useMemo } from "react";
 import { subtreeIds } from "../../domain/graph";
-import { estimateNodeWidth, LAYOUT_HSTEP } from "../../domain/layout";
+import { appendChildY, estimateNodeWidth, LAYOUT_HSTEP } from "../../domain/layout";
 import { findNeighbor, type NavigationDirection } from "../../domain/navigation";
 import type { Graph, MindEdge, MindNode, NodeId, Position } from "../../domain/types";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
@@ -304,7 +304,11 @@ function createSiblingOf(state: ReturnType<typeof mindMapStore.getState>, id: No
   const dx = node.position.x >= parent.position.x ? 1 : -1;
   state.addChild({
     parentId: node.parentId,
-    position: { x: parent.position.x + dx * LAYOUT_HSTEP, y: parent.position.y },
+    // y below existing siblings so the new node is appended last on its level.
+    position: {
+      x: parent.position.x + dx * LAYOUT_HSTEP,
+      y: appendChildY(state.graph, node.parentId),
+    },
   });
 }
 

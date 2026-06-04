@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendChildY,
   estimateNodeWidth,
   LAYOUT_HSTEP,
   LAYOUT_MAX_WIDTH,
@@ -231,5 +232,22 @@ describe("sideOf", () => {
     };
     const g: Graph = { nodes: [orphan], edges: [] };
     expect(sideOf(g, "orphan")).toBeNull();
+  });
+});
+
+describe("appendChildY", () => {
+  it("returns the parent's own y when it has no children yet", () => {
+    const g = graphOf(node("r", null, 0, 30));
+    expect(appendChildY(g, "r")).toBe(30);
+  });
+
+  it("returns one step below the lowest existing child", () => {
+    const g = graphOf(node("r", null, 0, 30), node("a", "r", 100, 10), node("b", "r", 100, 90));
+    expect(appendChildY(g, "r")).toBe(90 + LAYOUT_VSTEP);
+  });
+
+  it("returns 0 for an unknown parent", () => {
+    const g = graphOf(node("r", null, 0, 30));
+    expect(appendChildY(g, "ghost")).toBe(0);
   });
 });

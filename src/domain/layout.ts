@@ -31,6 +31,28 @@ export function estimateNodeWidth(text: string, isRoot: boolean): number {
 export type Side = "left" | "right";
 
 /**
+ * The y a new child of `parentId` should be hinted with so the layout — which
+ * orders siblings by their y — places it last on its level. Returns a value just
+ * below the parent's lowest existing child, or the parent's own y when it has no
+ * children yet. (0 for an unknown parent — callers normally guard that already.)
+ */
+export function appendChildY(graph: Graph, parentId: NodeId): number {
+  const parent = graph.nodes.find((node) => node.id === parentId);
+  const baseY = parent?.position.y ?? 0;
+  let maxY = baseY;
+  let hasChild = false;
+  for (const node of graph.nodes) {
+    if (node.parentId === parentId) {
+      hasChild = true;
+      if (node.position.y > maxY) {
+        maxY = node.position.y;
+      }
+    }
+  }
+  return hasChild ? maxY + LAYOUT_VSTEP : baseY;
+}
+
+/**
  * Tidy-tree layout for a mindmap. Roots keep their stored positions; descendants
  * are arranged so each parent's children are vertically centred around the
  * parent's y, with one VSTEP per leaf so subtrees never overlap. Direct children

@@ -1,6 +1,6 @@
 import { createStore, type StoreApi, useStore } from "zustand";
 import * as graphOps from "../domain/graph";
-import { LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
+import { appendChildY, LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
 import type { Graph, NodeId, Position } from "../domain/types";
 import type { DebouncedSaver } from "../persistence/debounced-saver";
 import { loadGraph } from "../persistence/repository";
@@ -108,7 +108,8 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         return null;
       }
       const dx = node.parentId === null ? 1 : sideOf(graph, parentId) === "left" ? -1 : 1;
-      return { x: node.position.x + dx * LAYOUT_HSTEP, y: node.position.y };
+      // y below the parent's existing children so the layout appends it last.
+      return { x: node.position.x + dx * LAYOUT_HSTEP, y: appendChildY(graph, parentId) };
     }
 
     return {

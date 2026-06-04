@@ -82,6 +82,21 @@ describe("addRoot / addChild", () => {
     expect(state.graph.edges).toHaveLength(1);
     expect(state.editingNodeId).toBe(childId);
   });
+
+  it("addChildOf appends each new child below its existing siblings", () => {
+    const store = createMindMapStore();
+    const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    store.getState().addChildOf(rootId);
+    const firstId = store.getState().selectedNodeId;
+    store.getState().addChildOf(rootId);
+    const secondId = store.getState().selectedNodeId;
+
+    const byId = new Map(store.getState().graph.nodes.map((n) => [n.id, n]));
+    const first = byId.get(firstId ?? "");
+    const second = byId.get(secondId ?? "");
+    // The later-created child sits below the earlier one after layout.
+    expect((second?.position.y ?? 0) > (first?.position.y ?? 0)).toBe(true);
+  });
 });
 
 describe("removeSubtree", () => {
