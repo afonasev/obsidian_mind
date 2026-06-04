@@ -31,7 +31,7 @@
       "biome check --write --error-on-warnings --no-errors-on-unmatched"
     ],
     "*.{ts,tsx}": [
-      "vitest related --run --coverage"
+      "vitest related --run"
     ]
   },
   "dependencies": {
