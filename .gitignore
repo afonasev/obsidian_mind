@@ -30,3 +30,7 @@ src-tauri/gen/
 .worktrees/
 .superpowers/
 .claude/worktrees/
+
+# Python bytecode (Claude hooks)
+__pycache__/
+*.pyc

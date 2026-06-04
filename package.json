@@ -1,0 +1,64 @@
+{
+  "name": "obsidian-mind",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "format": "biome format --write",
+    "format:check": "biome format --error-on-warnings",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome lint --write",
+    "check:biome": "biome check --error-on-warnings",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "test:e2e": "playwright test",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "type-check": "tsc --noEmit",
+    "check": "bun run format:check && bun run lint && bun run type-check && bun run test && bun run test:e2e",
+    "postinstall": "simple-git-hooks"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "bunx lint-staged && bun run type-check",
+    "pre-push": "bun run check"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,json,jsonc,md,css}": [
+      "biome check --write --error-on-warnings --no-errors-on-unmatched"
+    ],
+    "*.{ts,tsx}": [
+      "vitest related --run --coverage"
+    ]
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.3.5",
+    "idb": "^8.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
+    "@playwright/test": "^1.60.0",
+    "@tauri-apps/cli": "^2.11.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^4.1.7",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^26",
+    "lint-staged": "^17.0.5",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.7"
+  }
+}
