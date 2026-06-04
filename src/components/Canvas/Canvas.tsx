@@ -1,13 +1,12 @@
 import {
-  Background,
   Controls,
-  type Edge as RFEdge,
   type NodeChange,
   type NodeMouseHandler,
   type NodeTypes,
   type OnNodesChange,
   ReactFlow,
   ReactFlowProvider,
+  type Edge as RFEdge,
   useReactFlow,
   type XYPosition,
 } from "@xyflow/react";
@@ -36,6 +35,8 @@ function CanvasInner(): JSX.Element {
   const graph = useMindMapStore((state) => state.graph);
   const editingNodeId = useMindMapStore((state) => state.editingNodeId);
   const selectedNodeId = useMindMapStore((state) => state.selectedNodeId);
+  // No active workspace ⇒ there is nowhere to put roots; show a hint instead.
+  const hasActiveWorkspace = useMindMapStore((state) => state.activeWorkspaceId !== null);
   const { screenToFlowPosition, fitView } = useReactFlow();
 
   const nodes = useMemo(() => toRFNodes(graph, selectedNodeId), [graph, selectedNodeId]);
@@ -101,9 +102,13 @@ function CanvasInner(): JSX.Element {
         disableKeyboardA11y
         nodesFocusable={false}
       >
-        <Background />
         <Controls />
       </ReactFlow>
+      {hasActiveWorkspace ? null : (
+        <div className={styles.emptyHint} role="note">
+          Создайте пространство, чтобы начать работу
+        </div>
+      )}
       <HotkeysHelp />
     </div>
   );

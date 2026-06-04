@@ -25,6 +25,12 @@ function resetStore(): void {
     mindMapStore.getState().selectNode(null);
     mindMapStore.getState().stopEditing();
     mindMapStore.getState().setDropTarget(null);
+    // Node creation is guarded behind an active workspace — seed one for the tests.
+    mindMapStore.setState({
+      activeWorkspaceId: "ws",
+      workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+      editingWorkspaceId: null,
+    });
   });
 }
 
@@ -93,6 +99,26 @@ describe("Canvas (rendered)", () => {
     });
 
     expect(mindMapStore.getState().graph.nodes.length).toBe(1);
+  });
+
+  it("shows the create-workspace hint and blocks root creation when none is active", () => {
+    act(() => {
+      mindMapStore.setState({ activeWorkspaceId: null, workspaces: [], editingWorkspaceId: null });
+    });
+    render(<Canvas />);
+    expect(screen.getByText("Создайте пространство, чтобы начать работу")).toBeInTheDocument();
+
+    const pane = document.querySelector(".react-flow__pane");
+    if (pane === null) throw new Error("pane not found");
+    act(() => {
+      fireEvent.doubleClick(pane, { clientX: 100, clientY: 80 });
+    });
+    expect(mindMapStore.getState().graph.nodes).toHaveLength(0);
+  });
+
+  it("hides the create-workspace hint when a workspace is active", () => {
+    render(<Canvas />);
+    expect(screen.queryByText("Создайте пространство, чтобы начать работу")).toBeNull();
   });
 
   it("ignores double-clicks that originate inside a non-pane element", () => {

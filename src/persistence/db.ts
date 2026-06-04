@@ -1,19 +1,35 @@
 import { type IDBPDatabase, openDB } from "idb";
+import type { Workspace } from "../domain/workspaces";
 
 export const DB_NAME = "mindmap";
-export const DB_VERSION = 1;
-export const STORE_NAME = "graph";
-export const RECORD_KEY = "current";
+export const DB_VERSION = 2;
+export const GRAPH_STORE = "graph";
+export const WORKSPACES_STORE = "workspaces";
+export const META_STORE = "meta";
+
+// Fixed keys inside the `meta` object store.
+export const META_ACTIVE_WORKSPACE_KEY = "activeWorkspaceId";
+export const META_PANEL_COLLAPSED_KEY = "panelCollapsed";
 
 export interface MindMapDb {
   graph: {
-    key: typeof RECORD_KEY;
+    // One graph record per workspace, keyed by workspace id.
+    key: string;
     value: StoredGraph;
+  };
+  workspaces: {
+    key: string;
+    value: Workspace;
+  };
+  meta: {
+    // Heterogeneous singletons (active id, panel state) — narrowed on read.
+    key: string;
+    value: unknown;
   };
 }
 
 export interface StoredGraph {
-  readonly version: 1;
+  readonly version: 2;
   readonly nodes: unknown;
   readonly edges: unknown;
   readonly updatedAt: number;
@@ -22,9 +38,15 @@ export interface StoredGraph {
 export function openMindMapDb(): Promise<IDBPDatabase<MindMapDb>> {
   return openDB<MindMapDb>(DB_NAME, DB_VERSION, {
     upgrade(database) {
-      // `upgrade` only fires when the requested version is higher than the
-      // current one; for a fresh DB the store cannot already exist.
-      database.createObjectStore(STORE_NAME);
+      // v1→v2 is a breaking schema change: the old single-graph store kept its
+      // only record under the fixed key `current`. We drop it (no migration —
+      // real users have no graph yet) and recreate `graph` keyed by workspace id.
+      if (database.objectStoreNames.contains(GRAPH_STORE)) {
+        database.deleteObjectStore(GRAPH_STORE);
+      }
+      database.createObjectStore(GRAPH_STORE);
+      database.createObjectStore(WORKSPACES_STORE);
+      database.createObjectStore(META_STORE);
     },
   });
 }

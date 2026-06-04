@@ -1,8 +1,20 @@
 import "fake-indexeddb/auto";
+import { openDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Graph } from "../domain/types";
-import { DB_NAME, openMindMapDb, RECORD_KEY, STORE_NAME } from "./db";
-import { loadGraph, saveGraph } from "./repository";
+import type { Workspace } from "../domain/workspaces";
+import { DB_NAME, GRAPH_STORE, openMindMapDb, WORKSPACES_STORE } from "./db";
+import {
+  deleteWorkspace,
+  loadActiveWorkspaceId,
+  loadGraph,
+  loadPanelCollapsed,
+  loadWorkspaces,
+  saveActiveWorkspaceId,
+  saveGraph,
+  savePanelCollapsed,
+  saveWorkspace,
+} from "./repository";
 
 async function resetDb(): Promise<void> {
   // fake-indexeddb persists across tests by default. Wipe it before each.
@@ -28,6 +40,10 @@ const sampleGraph: Graph = {
   edges: [{ id: "e1", source: "n1", target: "n2" }],
 };
 
+function ws(id: string, name = id, createdAt = 0): Workspace {
+  return { id, name, createdAt };
+}
+
 beforeEach(async () => {
   await resetDb();
 });
@@ -36,24 +52,35 @@ afterEach(async () => {
   await resetDb();
 });
 
-describe("loadGraph", () => {
-  it("returns null when no record exists", async () => {
-    expect(await loadGraph()).toBeNull();
+describe("loadGraph / saveGraph", () => {
+  it("returns null when no record exists for the workspace", async () => {
+    expect(await loadGraph("w1")).toBeNull();
   });
 
-  it("returns the saved graph after saveGraph", async () => {
-    await saveGraph(sampleGraph);
-    const loaded = await loadGraph();
+  it("returns the saved graph after saveGraph under the same workspace key", async () => {
+    await saveGraph("w1", sampleGraph);
+    const loaded = await loadGraph("w1");
     expect(loaded?.nodes).toEqual(sampleGraph.nodes);
     expect(loaded?.edges).toEqual(sampleGraph.edges);
+  });
+
+  it("keeps graphs isolated per workspace id", async () => {
+    await saveGraph("w1", sampleGraph);
+    const other: Graph = {
+      nodes: [{ id: "x", text: "x", position: { x: 0, y: 0 }, parentId: null }],
+      edges: [],
+    };
+    await saveGraph("w2", other);
+    expect((await loadGraph("w1"))?.nodes.map((n) => n.id)).toEqual(["n1", "n2"]);
+    expect((await loadGraph("w2"))?.nodes.map((n) => n.id)).toEqual(["x"]);
   });
 
   it("drops edges referencing missing nodes on load", async () => {
     const db = await openMindMapDb();
     await db.put(
-      STORE_NAME,
+      GRAPH_STORE,
       {
-        version: 1,
+        version: 2,
         nodes: sampleGraph.nodes,
         edges: [
           { id: "valid", source: "n1", target: "n2" },
@@ -61,70 +88,133 @@ describe("loadGraph", () => {
         ],
         updatedAt: Date.now(),
       },
-      RECORD_KEY,
+      "w1",
     );
     db.close();
-    const loaded = await loadGraph();
+    const loaded = await loadGraph("w1");
     expect(loaded?.edges.map((edge) => edge.id)).toEqual(["valid"]);
   });
 
   it("treats a stored record with empty arrays as a valid empty graph", async () => {
     const db = await openMindMapDb();
-    await db.put(STORE_NAME, { version: 1, nodes: [], edges: [], updatedAt: 0 }, RECORD_KEY);
+    await db.put(GRAPH_STORE, { version: 2, nodes: [], edges: [], updatedAt: 0 }, "w1");
     db.close();
-    const loaded = await loadGraph();
-    expect(loaded).toEqual({ nodes: [], edges: [] });
+    expect(await loadGraph("w1")).toEqual({ nodes: [], edges: [] });
   });
 
   it("tolerates a record with missing nodes/edges fields", async () => {
     const db = await openMindMapDb();
-    await db.put(
-      STORE_NAME,
-      // Simulate a malformed legacy record without nodes/edges.
-      { version: 1, updatedAt: 0 } as never,
-      RECORD_KEY,
-    );
+    // Simulate a malformed record without nodes/edges.
+    await db.put(GRAPH_STORE, { version: 2, updatedAt: 0 } as never, "w1");
     db.close();
-    const loaded = await loadGraph();
-    expect(loaded).toEqual({ nodes: [], edges: [] });
+    expect(await loadGraph("w1")).toEqual({ nodes: [], edges: [] });
   });
-});
 
-describe("saveGraph", () => {
-  it("stores the graph under the fixed record key with version 1 and a timestamp", async () => {
+  it("stores the graph under the workspace key with version 2 and a timestamp", async () => {
     const before = Date.now();
-    await saveGraph(sampleGraph);
+    await saveGraph("w1", sampleGraph);
     const after = Date.now();
 
     const db = await openMindMapDb();
-    const record = await db.get(STORE_NAME, RECORD_KEY);
+    const record = await db.get(GRAPH_STORE, "w1");
     db.close();
 
-    expect(record?.version).toBe(1);
+    expect(record?.version).toBe(2);
     expect(record?.nodes).toEqual(sampleGraph.nodes);
     expect(record?.edges).toEqual(sampleGraph.edges);
     expect(record?.updatedAt).toBeGreaterThanOrEqual(before);
     expect(record?.updatedAt).toBeLessThanOrEqual(after);
   });
+});
 
-  it("overwrites a previous record (single-document model)", async () => {
-    await saveGraph(sampleGraph);
-    const replacement: Graph = {
-      nodes: [{ id: "x", text: "x", position: { x: 0, y: 0 }, parentId: null }],
-      edges: [],
-    };
-    await saveGraph(replacement);
-    const loaded = await loadGraph();
-    expect(loaded?.nodes.map((node) => node.id)).toEqual(["x"]);
+describe("workspaces CRUD", () => {
+  it("returns an empty list when there are no workspaces", async () => {
+    expect(await loadWorkspaces()).toEqual([]);
+  });
+
+  it("saves and loads workspaces ordered by createdAt", async () => {
+    await saveWorkspace(ws("b", "B", 200));
+    await saveWorkspace(ws("a", "A", 100));
+    await saveWorkspace(ws("c", "C", 300));
+    expect((await loadWorkspaces()).map((w) => w.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("overwrites a workspace stored under the same id (rename)", async () => {
+    await saveWorkspace(ws("a", "Old", 1));
+    await saveWorkspace(ws("a", "New", 1));
+    const list = await loadWorkspaces();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.name).toBe("New");
+  });
+
+  it("deleteWorkspace removes the workspace together with its graph", async () => {
+    await saveWorkspace(ws("a"));
+    await saveGraph("a", sampleGraph);
+    await deleteWorkspace("a");
+    expect(await loadWorkspaces()).toEqual([]);
+    expect(await loadGraph("a")).toBeNull();
+  });
+});
+
+describe("meta", () => {
+  it("returns null active workspace id by default", async () => {
+    expect(await loadActiveWorkspaceId()).toBeNull();
+  });
+
+  it("reads back a saved active workspace id", async () => {
+    await saveActiveWorkspaceId("w1");
+    expect(await loadActiveWorkspaceId()).toBe("w1");
+  });
+
+  it("treats a stored null active id as none", async () => {
+    await saveActiveWorkspaceId("w1");
+    await saveActiveWorkspaceId(null);
+    expect(await loadActiveWorkspaceId()).toBeNull();
+  });
+
+  it("returns false panel-collapsed by default", async () => {
+    expect(await loadPanelCollapsed()).toBe(false);
+  });
+
+  it("reads back a saved panel-collapsed flag", async () => {
+    await savePanelCollapsed(true);
+    expect(await loadPanelCollapsed()).toBe(true);
+    await savePanelCollapsed(false);
+    expect(await loadPanelCollapsed()).toBe(false);
   });
 });
 
 describe("openMindMapDb", () => {
+  it("creates the three object stores", async () => {
+    const db = await openMindMapDb();
+    expect(db.objectStoreNames.contains(GRAPH_STORE)).toBe(true);
+    expect(db.objectStoreNames.contains(WORKSPACES_STORE)).toBe(true);
+    expect(db.objectStoreNames.contains("meta")).toBe(true);
+    db.close();
+  });
+
   it("is idempotent for the same version", async () => {
     const a = await openMindMapDb();
     a.close();
     const b = await openMindMapDb();
-    expect(b.objectStoreNames.contains(STORE_NAME)).toBe(true);
+    expect(b.objectStoreNames.contains(GRAPH_STORE)).toBe(true);
     b.close();
+  });
+
+  it("drops the v1 'current' graph record when upgrading to v2", async () => {
+    // Recreate the v1 schema: a single `graph` store with one record under `current`.
+    const v1 = await openDB(DB_NAME, 1, {
+      upgrade(database) {
+        database.createObjectStore("graph");
+      },
+    });
+    await v1.put("graph", { version: 1, nodes: [], edges: [], updatedAt: 0 }, "current");
+    v1.close();
+
+    const db = await openMindMapDb();
+    const legacy = await db.get(GRAPH_STORE, "current");
+    db.close();
+    expect(legacy).toBeUndefined();
+    expect(await loadWorkspaces()).toEqual([]);
   });
 });

@@ -4,65 +4,119 @@ import type { JSX } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { sideOf } from "../domain/layout";
 import type { Graph, NodeId } from "../domain/types";
+import type { Workspace } from "../domain/workspaces";
 import type { DebouncedSaver } from "../persistence/debounced-saver";
 import {
-  bindSaver,
   createMindMapStore,
+  DEFAULT_WORKSPACE_NAME,
   MAX_HISTORY,
+  type MindMapPersistence,
+  type MindMapStore,
   mindMapStore,
   useMindMapStore,
 } from "./mindmap-store";
 
-function makeFakeSaver(): DebouncedSaver & {
+type FakePersistence = MindMapPersistence & {
+  loadGraph: ReturnType<typeof vi.fn>;
+  saveGraph: ReturnType<typeof vi.fn>;
+  loadWorkspaces: ReturnType<typeof vi.fn>;
+  saveWorkspace: ReturnType<typeof vi.fn>;
+  deleteWorkspace: ReturnType<typeof vi.fn>;
+  loadActiveWorkspaceId: ReturnType<typeof vi.fn>;
+  saveActiveWorkspaceId: ReturnType<typeof vi.fn>;
+  loadPanelCollapsed: ReturnType<typeof vi.fn>;
+  savePanelCollapsed: ReturnType<typeof vi.fn>;
+};
+
+function makePersistence(): FakePersistence {
+  const graphs = new Map<string, Graph>();
+  const workspaces = new Map<string, Workspace>();
+  const meta = { activeId: null as string | null, panel: false };
+  return {
+    loadGraph: vi.fn(async (id: string) => graphs.get(id) ?? null),
+    saveGraph: vi.fn(async (id: string, graph: Graph) => {
+      graphs.set(id, graph);
+    }),
+    loadWorkspaces: vi.fn(
+      async () =>
+        [...workspaces.values()].sort((a, b) => a.createdAt - b.createdAt) as readonly Workspace[],
+    ),
+    saveWorkspace: vi.fn(async (workspace: Workspace) => {
+      workspaces.set(workspace.id, workspace);
+    }),
+    deleteWorkspace: vi.fn(async (id: string) => {
+      workspaces.delete(id);
+      graphs.delete(id);
+    }),
+    loadActiveWorkspaceId: vi.fn(async () => meta.activeId),
+    saveActiveWorkspaceId: vi.fn(async (id: string | null) => {
+      meta.activeId = id;
+    }),
+    loadPanelCollapsed: vi.fn(async () => meta.panel),
+    savePanelCollapsed: vi.fn(async (collapsed: boolean) => {
+      meta.panel = collapsed;
+    }),
+  };
+}
+
+// A saver that persists only when flushed (via the store's real save closure), so
+// tests stay free of real timers while still exercising the flush-before-switch path.
+function writingSaver(save: (graph: Graph) => Promise<void>): DebouncedSaver {
+  let pending: Graph | null = null;
+  return {
+    schedule(graph) {
+      pending = graph;
+    },
+    async flush() {
+      if (pending !== null) {
+        const graph = pending;
+        pending = null;
+        await save(graph);
+      }
+    },
+    dispose() {},
+  };
+}
+
+function spySaver(): DebouncedSaver & {
   schedule: ReturnType<typeof vi.fn<(graph: Graph) => void>>;
   flush: ReturnType<typeof vi.fn<() => Promise<void>>>;
-  dispose: ReturnType<typeof vi.fn<() => void>>;
 } {
   return {
     schedule: vi.fn<(graph: Graph) => void>(),
     flush: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-    dispose: vi.fn<() => void>(),
+    dispose: vi.fn(),
   };
 }
 
+function makeStore(): { store: MindMapStore; persistence: FakePersistence } {
+  const persistence = makePersistence();
+  const store = createMindMapStore({ persistence, createSaver: (save) => writingSaver(save) });
+  return { store, persistence };
+}
+
+/** A store seeded with one active workspace, for the node-operation tests. */
+function activeStore(): MindMapStore {
+  const { store } = makeStore();
+  store.setState({ activeWorkspaceId: "ws", workspaces: [{ id: "ws", name: "W", createdAt: 0 }] });
+  return store;
+}
+
 describe("createMindMapStore", () => {
-  it("starts with an empty graph and no selection or editing target", () => {
-    const store = createMindMapStore();
+  it("starts empty with no selection, editing target or active workspace", () => {
+    const { store } = makeStore();
     const state = store.getState();
     expect(state.graph).toEqual({ nodes: [], edges: [] });
     expect(state.selectedNodeId).toBeNull();
     expect(state.editingNodeId).toBeNull();
-  });
-});
-
-describe("loadFromStorage", () => {
-  it("populates graph from the loader", async () => {
-    const loaded: Graph = {
-      nodes: [{ id: "a", text: "x", position: { x: 0, y: 0 }, parentId: null }],
-      edges: [],
-    };
-    const store = createMindMapStore({ load: async () => loaded });
-    await store.getState().loadFromStorage();
-    expect(store.getState().graph).toBe(loaded);
-  });
-
-  it("leaves an empty graph in place when the loader returns null", async () => {
-    const store = createMindMapStore({ load: async () => null });
-    await store.getState().loadFromStorage();
-    expect(store.getState().graph).toEqual({ nodes: [], edges: [] });
-  });
-
-  it("falls back to the real repository when no loader is injected", async () => {
-    const store = createMindMapStore();
-    // Real loader against fake-indexeddb returns null on a fresh DB.
-    await store.getState().loadFromStorage();
-    expect(store.getState().graph).toEqual({ nodes: [], edges: [] });
+    expect(state.workspaces).toEqual([]);
+    expect(state.activeWorkspaceId).toBeNull();
   });
 });
 
 describe("addRoot / addChild", () => {
   it("addRoot adds a node and selects it for editing", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     const state = store.getState();
     expect(state.graph.nodes).toHaveLength(1);
@@ -71,7 +125,7 @@ describe("addRoot / addChild", () => {
   });
 
   it("addChild attaches a child to the parent and selects the new node", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const parentId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     const childId = store.getState().addChild({
       parentId,
@@ -84,7 +138,7 @@ describe("addRoot / addChild", () => {
   });
 
   it("addChildOf appends each new child below its existing siblings", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().addChildOf(rootId);
     const firstId = store.getState().selectedNodeId;
@@ -99,9 +153,23 @@ describe("addRoot / addChild", () => {
   });
 });
 
+describe("creation guard without an active workspace", () => {
+  it("addRoot is a no-op and returns an empty id when no workspace is active", () => {
+    const { store } = makeStore();
+    expect(store.getState().addRoot({ position: { x: 0, y: 0 } })).toBe("");
+    expect(store.getState().graph.nodes).toHaveLength(0);
+  });
+
+  it("addChild is a no-op and returns an empty id when no workspace is active", () => {
+    const { store } = makeStore();
+    expect(store.getState().addChild({ parentId: "p", position: { x: 0, y: 0 } })).toBe("");
+    expect(store.getState().graph.nodes).toHaveLength(0);
+  });
+});
+
 describe("removeSubtree", () => {
   it("removes the subtree and clears selection / editing if they were inside it", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     const childId = store.getState().addChild({
       parentId: rootId,
@@ -118,7 +186,7 @@ describe("removeSubtree", () => {
   });
 
   it("preserves selection on a surviving sibling subtree", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootA = store.getState().addRoot({ position: { x: 0, y: 0 } });
     const rootB = store.getState().addRoot({ position: { x: 100, y: 0 } });
     store.getState().selectNode(rootB);
@@ -129,14 +197,14 @@ describe("removeSubtree", () => {
 
 describe("updateText / moveNode", () => {
   it("updateText changes the node's text", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().updateText(id, "Идея");
     expect(store.getState().graph.nodes[0]?.text).toBe("Идея");
   });
 
   it("moveNode updates the position", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().moveNode(id, { x: 50, y: 60 });
     expect(store.getState().graph.nodes[0]?.position).toEqual({ x: 50, y: 60 });
@@ -145,7 +213,7 @@ describe("updateText / moveNode", () => {
 
 describe("selection and editing", () => {
   it("selectNode sets the current selection", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().selectNode(id);
     expect(store.getState().selectedNodeId).toBe(id);
@@ -154,7 +222,7 @@ describe("selection and editing", () => {
   });
 
   it("startEditing sets both editingNodeId and selectedNodeId", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().selectNode(null);
     store.getState().startEditing(id);
@@ -163,7 +231,7 @@ describe("selection and editing", () => {
   });
 
   it("stopEditing clears only editingNodeId", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     expect(store.getState().editingNodeId).toBeNull();
@@ -173,7 +241,7 @@ describe("selection and editing", () => {
 
 describe("undo / redo", () => {
   it("reverts the last change and reapplies it on redo", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     store.getState().dropNode(id, { x: 10, y: 20 });
@@ -185,14 +253,14 @@ describe("undo / redo", () => {
   });
 
   it("undo with empty history and redo with empty future are no-ops", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     store.getState().undo();
     store.getState().redo();
     expect(store.getState().graph.nodes).toHaveLength(0);
   });
 
   it("collapses a text-editing session into a single undo step", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "start" });
     store.getState().stopEditing();
 
@@ -208,11 +276,10 @@ describe("undo / redo", () => {
   });
 
   it("treats two separate drags of the same node as two undo steps", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
 
-    // First drag: an in-flight tick then a drop. Second drag: another drop.
     store.getState().moveNode(id, { x: 5, y: 0 });
     store.getState().dropNode(id, { x: 10, y: 0 });
     store.getState().dropNode(id, { x: 20, y: 0 });
@@ -225,7 +292,7 @@ describe("undo / redo", () => {
   });
 
   it("records node creation and naming as a single undo step", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     const childId = store.getState().addChild({ parentId: rootId, position: { x: 100, y: 0 } });
@@ -239,7 +306,7 @@ describe("undo / redo", () => {
   });
 
   it("leaves no history entry when a fresh empty node is abandoned", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     const pastLen = store.getState().past.length;
@@ -252,7 +319,7 @@ describe("undo / redo", () => {
   });
 
   it("undo restores a deleted committed node", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "keep" });
     store.getState().stopEditing();
     store.getState().removeSubtree(id);
@@ -264,7 +331,7 @@ describe("undo / redo", () => {
   });
 
   it("drops a now-invalid selection after undo", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     store.getState().selectNode(id);
@@ -275,7 +342,7 @@ describe("undo / redo", () => {
   });
 
   it("discards the redo branch when a new change follows an undo", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     store.getState().dropNode(id, { x: 10, y: 0 });
@@ -290,7 +357,7 @@ describe("undo / redo", () => {
   });
 
   it("does not record history for a no-op move to the same position", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     const pastLen = store.getState().past.length;
@@ -300,13 +367,13 @@ describe("undo / redo", () => {
   });
 
   it("ignores a move for an unknown node id", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     store.getState().moveNode("ghost", { x: 1, y: 1 });
     expect(store.getState().graph.nodes).toHaveLength(0);
   });
 
   it("dropNode re-sides a branch and re-flows the tree when dropped across the root", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     const childId = store.getState().addChild({ parentId: rootId, position: { x: 100, y: 0 } });
@@ -320,7 +387,7 @@ describe("undo / redo", () => {
   });
 
   it("dropNode records the whole drag as one undo step restoring the pre-drag layout", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     const childId = store.getState().addChild({ parentId: rootId, position: { x: 100, y: 0 } });
@@ -333,7 +400,7 @@ describe("undo / redo", () => {
   });
 
   it("caps the undo history at MAX_HISTORY steps", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     for (let i = 1; i <= MAX_HISTORY + 5; i++) {
@@ -345,12 +412,12 @@ describe("undo / redo", () => {
 
 describe("clipboard (copy / cut / paste)", () => {
   function seedRootChildAndTarget(): {
-    store: ReturnType<typeof createMindMapStore>;
+    store: MindMapStore;
     rootId: NodeId;
     childId: NodeId;
     targetId: NodeId;
   } {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
     store.getState().stopEditing();
     const childId = store
@@ -393,7 +460,7 @@ describe("clipboard (copy / cut / paste)", () => {
   });
 
   it("paste with an empty clipboard does nothing", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     store.getState().pasteInto(rootId);
@@ -404,12 +471,11 @@ describe("clipboard (copy / cut / paste)", () => {
     const { store, rootId } = seedRootChildAndTarget();
     store.getState().copyNode(rootId);
     store.getState().pasteInto("ghost");
-    // Only the original three nodes remain (nothing pasted).
     expect(store.getState().graph.nodes).toHaveLength(3);
   });
 
   it("copy and cut of an unknown node leave the clipboard empty", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootId = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
     store.getState().stopEditing();
     store.getState().copyNode("ghost");
@@ -421,7 +487,7 @@ describe("clipboard (copy / cut / paste)", () => {
 
 describe("reparent / drop target", () => {
   it("setDropTarget sets, keeps (guarded) and clears the highlighted node", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     store.getState().setDropTarget(id);
@@ -433,7 +499,7 @@ describe("reparent / drop target", () => {
   });
 
   it("reparent moves a node under a new parent as one undo step", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootA = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "A" });
     store.getState().stopEditing();
     const rootB = store.getState().addRoot({ position: { x: 500, y: 0 }, text: "B" });
@@ -448,7 +514,7 @@ describe("reparent / drop target", () => {
   });
 
   it("reparent is a no-op for an invalid move (attaching to itself)", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     const before = store.getState().past.length;
@@ -457,7 +523,7 @@ describe("reparent / drop target", () => {
   });
 
   it("reparent does nothing when the target is unknown", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
     store.getState().stopEditing();
     store.getState().reparent(id, "ghost");
@@ -465,7 +531,7 @@ describe("reparent / drop target", () => {
   });
 
   it("reparent coalesces with the preceding drag into a single undo step", () => {
-    const store = createMindMapStore();
+    const store = activeStore();
     const rootA = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "A" });
     store.getState().stopEditing();
     const rootB = store.getState().addRoot({ position: { x: 500, y: 0 }, text: "B" });
@@ -481,27 +547,304 @@ describe("reparent / drop target", () => {
   });
 });
 
-describe("bindSaver", () => {
+describe("loadWorkspaces", () => {
+  it("restores list, active workspace, panel state and graph", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
+    await persistence.saveWorkspace({ id: "b", name: "B", createdAt: 2 });
+    await persistence.saveGraph("b", {
+      nodes: [{ id: "n", text: "x", position: { x: 0, y: 0 }, parentId: null }],
+      edges: [],
+    });
+    await persistence.saveActiveWorkspaceId("b");
+    await persistence.savePanelCollapsed(true);
+
+    await store.getState().loadWorkspaces();
+    const s = store.getState();
+    expect(s.workspaces.map((w) => w.id)).toEqual(["a", "b"]);
+    expect(s.activeWorkspaceId).toBe("b");
+    expect(s.panelCollapsed).toBe(true);
+    expect(s.graph.nodes).toHaveLength(1);
+  });
+
+  it("falls back to no active workspace when the stored id is unknown", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
+    await persistence.saveActiveWorkspaceId("gone");
+    await store.getState().loadWorkspaces();
+    expect(store.getState().activeWorkspaceId).toBeNull();
+    expect(store.getState().graph.nodes).toHaveLength(0);
+  });
+
+  it("tolerates an active workspace that has no stored graph yet", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
+    await persistence.saveActiveWorkspaceId("a");
+    await store.getState().loadWorkspaces();
+    expect(store.getState().activeWorkspaceId).toBe("a");
+    expect(store.getState().graph.nodes).toHaveLength(0);
+  });
+});
+
+describe("createWorkspace", () => {
+  it("creates an active workspace and opens inline name editing", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().createWorkspace();
+    const s = store.getState();
+    expect(s.workspaces).toHaveLength(1);
+    const id = s.workspaces[0]?.id;
+    expect(s.activeWorkspaceId).toBe(id);
+    expect(s.editingWorkspaceId).toBe(id);
+    expect(s.workspaces[0]?.name).toBe("");
+    expect(s.graph.nodes).toHaveLength(0);
+    expect(persistence.saveWorkspace).toHaveBeenCalled();
+    expect(persistence.saveActiveWorkspaceId).toHaveBeenCalledWith(id);
+  });
+});
+
+describe("commitWorkspaceName / cancelWorkspaceName / startWorkspaceRename", () => {
+  async function freshNamed(name: string): Promise<{ store: MindMapStore; id: string }> {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const id = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(id, name);
+    return { store, id };
+  }
+
+  it("stores a non-empty name and closes editing", async () => {
+    const { store, id } = await freshNamed("Работа");
+    expect(store.getState().workspaces.find((w) => w.id === id)?.name).toBe("Работа");
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+
+  it("falls back to the default name when a fresh workspace is left empty", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const id = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(id, "   ");
+    expect(store.getState().workspaces.find((w) => w.id === id)?.name).toBe(DEFAULT_WORKSPACE_NAME);
+  });
+
+  it("rejects an empty rename of an already-named workspace", async () => {
+    const { store, id } = await freshNamed("Имя");
+    store.getState().startWorkspaceRename(id);
+    expect(store.getState().editingWorkspaceId).toBe(id);
+    await store.getState().commitWorkspaceName(id, "  ");
+    expect(store.getState().workspaces.find((w) => w.id === id)?.name).toBe("Имя");
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+
+  it("commitWorkspaceName clears editing for an unknown id", async () => {
+    const { store } = makeStore();
+    store.setState({ editingWorkspaceId: "ghost" });
+    await store.getState().commitWorkspaceName("ghost", "x");
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+
+  it("cancelWorkspaceName defaults the name of a fresh workspace", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const id = store.getState().activeWorkspaceId ?? "";
+    await store.getState().cancelWorkspaceName(id);
+    expect(store.getState().workspaces.find((w) => w.id === id)?.name).toBe(DEFAULT_WORKSPACE_NAME);
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+
+  it("cancelWorkspaceName keeps an existing workspace's name", async () => {
+    const { store, id } = await freshNamed("Имя");
+    store.getState().startWorkspaceRename(id);
+    await store.getState().cancelWorkspaceName(id);
+    expect(store.getState().workspaces.find((w) => w.id === id)?.name).toBe("Имя");
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+
+  it("cancelWorkspaceName clears editing for an unknown id", async () => {
+    const { store } = makeStore();
+    store.setState({ editingWorkspaceId: "ghost" });
+    await store.getState().cancelWorkspaceName("ghost");
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+});
+
+describe("selectWorkspace", () => {
+  it("switches the visible graph and keeps graphs independent", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    store.getState().addRoot({ position: { x: 0, y: 0 }, text: "in A" });
+    store.getState().stopEditing();
+
+    await store.getState().createWorkspace();
+    const b = store.getState().activeWorkspaceId ?? "";
+    expect(store.getState().graph.nodes).toHaveLength(0);
+    store.getState().addRoot({ position: { x: 0, y: 0 }, text: "in B" });
+    store.getState().stopEditing();
+
+    await store.getState().selectWorkspace(a);
+    expect(store.getState().graph.nodes.map((n) => n.text)).toEqual(["in A"]);
+    await store.getState().selectWorkspace(b);
+    expect(store.getState().graph.nodes.map((n) => n.text)).toEqual(["in B"]);
+  });
+
+  it("is a no-op when selecting the already-active workspace", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    persistence.loadGraph.mockClear();
+    await store.getState().selectWorkspace(a);
+    expect(persistence.loadGraph).not.toHaveBeenCalled();
+  });
+
+  it("keeps undo/redo history isolated per workspace", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    store.getState().addRoot({ position: { x: 0, y: 0 }, text: "A1" });
+    store.getState().stopEditing();
+    expect(store.getState().past.length).toBeGreaterThan(0);
+
+    await store.getState().createWorkspace();
+    expect(store.getState().past).toHaveLength(0);
+    // undo in B must not touch A.
+    store.getState().undo();
+
+    await store.getState().selectWorkspace(a);
+    expect(store.getState().past.length).toBeGreaterThan(0);
+    expect(store.getState().graph.nodes.map((n) => n.text)).toEqual(["A1"]);
+  });
+});
+
+describe("deleteWorkspace", () => {
+  async function twoWorkspaces(): Promise<{ store: MindMapStore; a: string; b: string }> {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(a, "A");
+    await store.getState().createWorkspace();
+    const b = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(b, "B");
+    return { store, a, b };
+  }
+
+  it("activates the neighbor when the active workspace is removed", async () => {
+    const { store, a, b } = await twoWorkspaces();
+    // b is active; deleting it falls back to the previous one, a.
+    await store.getState().deleteWorkspace(b);
+    expect(store.getState().activeWorkspaceId).toBe(a);
+    expect(store.getState().workspaces.map((w) => w.id)).toEqual([a]);
+  });
+
+  it("drops into the empty state when the last workspace is removed", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    await store.getState().deleteWorkspace(a);
+    expect(store.getState().activeWorkspaceId).toBeNull();
+    expect(store.getState().workspaces).toHaveLength(0);
+    expect(store.getState().graph.nodes).toHaveLength(0);
+    expect(persistence.saveActiveWorkspaceId).toHaveBeenLastCalledWith(null);
+  });
+
+  it("removes a non-active workspace without changing the active graph", async () => {
+    const { store, a, b } = await twoWorkspaces();
+    // b is active; add a node, then delete the inactive a.
+    store.getState().addRoot({ position: { x: 0, y: 0 }, text: "B1" });
+    store.getState().stopEditing();
+    await store.getState().deleteWorkspace(a);
+    expect(store.getState().activeWorkspaceId).toBe(b);
+    expect(store.getState().workspaces.map((w) => w.id)).toEqual([b]);
+    expect(store.getState().graph.nodes).toHaveLength(1);
+  });
+
+  it("deletes the workspace together with its graph through persistence", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().createWorkspace();
+    const id = store.getState().activeWorkspaceId ?? "";
+    store.getState().addRoot({ position: { x: 0, y: 0 }, text: "X" });
+    store.getState().stopEditing();
+    await store.getState().deleteWorkspace(id);
+    expect(persistence.deleteWorkspace).toHaveBeenCalledWith(id);
+    expect(await persistence.loadGraph(id)).toBeNull();
+  });
+
+  it("clears inline editing when the workspace being edited is removed", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const id = store.getState().activeWorkspaceId ?? "";
+    expect(store.getState().editingWorkspaceId).toBe(id);
+    await store.getState().deleteWorkspace(id);
+    expect(store.getState().editingWorkspaceId).toBeNull();
+  });
+});
+
+describe("togglePanel", () => {
+  it("flips and persists the collapsed state", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().togglePanel();
+    expect(store.getState().panelCollapsed).toBe(true);
+    expect(persistence.savePanelCollapsed).toHaveBeenCalledWith(true);
+    await store.getState().togglePanel();
+    expect(store.getState().panelCollapsed).toBe(false);
+  });
+});
+
+describe("autosave", () => {
   it("schedules a save whenever the graph reference changes", () => {
-    const store = createMindMapStore();
-    const saver = makeFakeSaver();
-    const unbind = bindSaver(store, saver);
+    const saver = spySaver();
+    const store = createMindMapStore({ persistence: makePersistence(), createSaver: () => saver });
+    store.setState({
+      activeWorkspaceId: "ws",
+      workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+    });
 
     store.getState().addRoot({ position: { x: 0, y: 0 } });
     expect(saver.schedule).toHaveBeenCalledTimes(1);
 
     store.getState().selectNode("anything" as NodeId);
-    // Selection changes don't mutate `graph`, so no extra save is scheduled.
     expect(saver.schedule).toHaveBeenCalledTimes(1);
 
-    const firstNode = store.getState().graph.nodes[0];
-    if (!firstNode) throw new Error("expected a node");
-    store.getState().updateText(firstNode.id, "new");
+    const node = store.getState().graph.nodes[0];
+    if (!node) throw new Error("expected a node");
+    store.getState().updateText(node.id, "new");
     expect(saver.schedule).toHaveBeenCalledTimes(2);
+  });
 
-    unbind();
-    store.getState().addRoot({ position: { x: 1, y: 1 } });
-    expect(saver.schedule).toHaveBeenCalledTimes(2);
+  it("flushes pending writes before switching the active workspace", async () => {
+    const saver = spySaver();
+    const store = createMindMapStore({ persistence: makePersistence(), createSaver: () => saver });
+    await store.getState().createWorkspace();
+    saver.flush.mockClear();
+    await store.getState().createWorkspace();
+    expect(saver.flush).toHaveBeenCalled();
+  });
+
+  it("flush() forwards to the saver", async () => {
+    const saver = spySaver();
+    const store = createMindMapStore({ persistence: makePersistence(), createSaver: () => saver });
+    await store.getState().flush();
+    expect(saver.flush).toHaveBeenCalled();
+  });
+
+  it("the save closure targets the active workspace and skips when none is active", async () => {
+    const persistence = makePersistence();
+    let save: (graph: Graph) => Promise<void> = async () => {};
+    const store = createMindMapStore({
+      persistence,
+      createSaver: (fn) => {
+        save = fn;
+        return spySaver();
+      },
+    });
+    const graph: Graph = { nodes: [], edges: [] };
+    await save(graph);
+    expect(persistence.saveGraph).not.toHaveBeenCalled();
+
+    store.setState({
+      activeWorkspaceId: "ws",
+      workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+    });
+    await save(graph);
+    expect(persistence.saveGraph).toHaveBeenCalledWith("ws", graph);
   });
 });
 
@@ -519,12 +862,16 @@ describe("useMindMapStore hook", () => {
   }
 
   it("re-renders when the selected slice of state changes", () => {
-    // Reset the singleton's graph between tests by clearing every node.
     act(() => {
       const ids = mindMapStore.getState().graph.nodes.map((node) => node.id);
       for (const id of ids) {
         mindMapStore.getState().removeSubtree(id);
       }
+      // The guard blocks root creation without an active workspace — seed one.
+      mindMapStore.setState({
+        activeWorkspaceId: "ws",
+        workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+      });
     });
 
     render(<NodeCount />);

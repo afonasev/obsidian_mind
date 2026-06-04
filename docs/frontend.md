@@ -23,6 +23,9 @@ export function App(): JSX.Element {
 - **`src/components/CloudNode/CloudNode.tsx`** — кастомная нода `@xyflow/react`. Скруглённый прямоугольник с тенью и текстом по центру; min-width 120 px, max-width 360 px; перенос по словам. Состояния: обычное / выделенное / редактирование. На правой грани при hover/selected — кнопка «+» для создания дочернего узла (`addChild`).
 - **`src/components/CloudNode/CloudNode.module.css`** — стили узла.
 - **`src/components/HotkeysHelp/HotkeysHelp.tsx`** — справка по горячим клавишам: кнопка «?» в углу канваса, по клику открывает панель со списком сочетаний. Статический оверлей, не зависит от стора; закрывается повторным кликом, кликом вне или `Escape` (Escape не всплывает на канвас, чтобы не снять выделение).
+- **`src/components/WorkspacePanel/WorkspacePanel.tsx`** — сворачиваемая панель пространств слева. Вертикальный список (активное выделено через `aria-current`), кнопка `[+]` (`Создать пространство`) под списком, у каждого элемента `⋮`-меню (`role="menu"`) с «Переименовать» и «Удалить». Создание и переименование — inline-инпут (`aria-label="Имя пространства"`, единая точка коммита — `onBlur`, `Enter`/`Escape` доводят до blur). Удаление — попап подтверждения (`role="dialog"`, «Удалить» / «Отмена», Escape отменяет). Состояние сворачивания читается из стора (`panelCollapsed`). Все мутации идут через экшены стора (`createWorkspace`, `selectWorkspace`, `startWorkspaceRename`, `commitWorkspaceName`, `cancelWorkspaceName`, `deleteWorkspace`, `togglePanel`).
+
+`App.tsx` рендерит `WorkspacePanel` рядом с `Canvas` (flex-row) и при маунте вызывает `loadWorkspaces()`. Канвас показывает подсказку «Создайте пространство…» (`role="note"`), пока нет активного пространства; в этом состоянии `addRoot` — no-op (создание корней запрещено).
 
 Правила для компонентов — [`.claude/rules/react.md`](../.claude/rules/react.md).
 
@@ -30,21 +33,38 @@ export function App(): JSX.Element {
 
 `src/store/mindmap-store.ts` экспортирует:
 
-- `createMindMapStore(options?)` — фабрика стора, удобна в тестах (можно подменить `load`).
+- `createMindMapStore(options?)` — фабрика стора. В тестах можно подменить `persistence` (весь слой `repository`) и `createSaver` (фабрику дебаунс-сейвера).
 - `mindMapStore` — продакшен-синглтон.
 - `useMindMapStore(selector)` — хук для React-компонентов (через `useStore` из `zustand`).
-- `bindSaver(store, saver)` — подписка, которая вызывает `saver.schedule(state.graph)` при каждом изменении ссылки `graph`. Возвращает функцию отписки.
+- `MindMapPersistence` — интерфейс слоя хранения (граф по `workspaceId`, CRUD пространств, `meta`).
+
+Стор **владеет** дебаунс-сейвером графа: после создания он сам подписывается на изменение ссылки `graph` и зовёт `saver.schedule(state.graph)`. Сейвер пишет под текущий `activeWorkspaceId` (резолвится в момент записи), поэтому смена/удаление активного пространства предваряется синхронным `saver.flush()` — иначе отложенная запись графа A ушла бы под ключ B. Экшен `flush()` отдаёт `saver.flush()` наружу (его дёргает `bindUnloadFlush` в `App` на закрытие страницы).
 
 Форма state:
 
 ```ts
 interface MindMapState {
+  // Срез активного пространства:
   readonly graph: Graph;
   readonly selectedNodeId: NodeId | null;
   readonly editingNodeId: NodeId | null;
   readonly past: readonly Graph[];
   readonly future: readonly Graph[];
-  loadFromStorage(): Promise<void>;
+  // Пространства:
+  readonly workspaces: readonly Workspace[];
+  readonly activeWorkspaceId: string | null;
+  readonly editingWorkspaceId: string | null; // пространство в режиме inline-переименования
+  readonly panelCollapsed: boolean;
+  loadWorkspaces(): Promise<void>;            // старт: список + активное + панель + граф
+  createWorkspace(): Promise<void>;           // активирует новое и открывает inline-ввод имени
+  commitWorkspaceName(id, name): Promise<void>;
+  cancelWorkspaceName(id): Promise<void>;
+  startWorkspaceRename(id): void;
+  deleteWorkspace(id): Promise<void>;         // граф + переход на соседа / в пустое состояние
+  selectWorkspace(id): Promise<void>;
+  togglePanel(): Promise<void>;
+  flush(): Promise<void>;
+  // Узлы (срез активного пространства):
   addRoot(input: { readonly position: Position; readonly text?: string }): NodeId;
   addChild(input: { readonly parentId: NodeId; readonly position: Position; readonly text?: string }): NodeId;
   removeSubtree(nodeId: NodeId): void;
@@ -55,20 +75,23 @@ interface MindMapState {
   stopEditing(): void;
   undo(): void;
   redo(): void;
-  endCoalescing(): void;
 }
 ```
 
 Особенности:
 
+- Видимый срез (`graph` / выделение / `past` / `future`) всегда относится к **активному** пространству. Истории неактивных пространств хранятся в замыкании фабрики (`Map<workspaceId, {past, future}>`), а не в state — их изменение не должно вызывать ререндер.
+- `selectWorkspace` (и переход при удалении): `flush` сейвера → стэш истории текущего → загрузка графа целевого → восстановление его истории (пусто, если в этой сессии не открывали) → сброс `selectedNodeId`/`editingNodeId` → запись активного в `meta`.
+- `addRoot` / `addChild` — **no-op без активного пространства** (создание корней запрещено, пока пространство не выбрано); возвращают пустой `NodeId`.
+- `createWorkspace` добавляет пространство с пустым именем, активирует его и ставит `editingWorkspaceId`; на коммите пустое имя → дефолт `«Новое пространство»`. Переименование существующего в пустое — отклоняется (имя остаётся прежним).
 - Каждый экшн, добавляющий узел (`addRoot`, `addChild`), сразу ставит `selectedNodeId` и `editingNodeId` на новый узел — это контракт сценария «новый узел создаётся в режиме редактирования».
 - Новый ребёнок добавляется **последним** среди соседей: `childHintPosition` (и `createSiblingOf` в Canvas) берут `y` через `appendChildY` — ниже всех существующих детей родителя. Раскладка сортирует соседей по `y` стабильной сортировкой, поэтому новый узел встаёт в конец уровня, а не в середину.
 - `removeSubtree` сбрасывает `selectedNodeId` / `editingNodeId`, если соответствующий узел был удалён.
-- `bindSaver` сравнивает ссылки графа (`state.graph !== previousGraph`), а не значения — поэтому экшены, не меняющие граф, не триггерят запись.
+- Автосейв сравнивает ссылки графа (`state.graph !== previousGraph`), а не значения — поэтому экшены, не меняющие граф, не триггерят запись.
 
 ### История (undo/redo)
 
-`past` / `future` — стеки снимков графа (снимки иммутабельны, поэтому это ссылки без копирования; глубина ограничена `MAX_HISTORY = 100`, только на время сессии). `undo` / `redo` переключают граф между стеками; `bindSaver` персистит восстановленный граф автоматически.
+`past` / `future` — стеки снимков графа активного пространства (снимки иммутабельны, поэтому это ссылки без копирования; глубина ограничена `MAX_HISTORY = 100`, только на время сессии; у каждого пространства — своя история). `undo` / `redo` переключают граф между стеками; автосейв персистит восстановленный граф автоматически.
 
 Гранулярность одного шага отмены задаётся склейкой:
 

@@ -1,10 +1,10 @@
-import { ReactFlowProvider } from "@xyflow/react";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { ReactFlowProvider } from "@xyflow/react";
 import type { JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mindMapStore } from "../../store/mindmap-store";
 import { LAYOUT_HSTEP, LAYOUT_VSTEP } from "../../domain/layout";
+import { mindMapStore } from "../../store/mindmap-store";
 import { CHILD_OFFSET_X, CloudNode, type CloudNodeProps } from "./CloudNode";
 
 function withProvider(children: ReactNode): JSX.Element {
@@ -20,6 +20,12 @@ function resetStore(): void {
     mindMapStore.getState().selectNode(null);
     mindMapStore.getState().stopEditing();
     mindMapStore.getState().setDropTarget(null);
+    // Node creation is guarded behind an active workspace — seed one for the tests.
+    mindMapStore.setState({
+      activeWorkspaceId: "ws",
+      workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+      editingWorkspaceId: null,
+    });
   });
 }
 

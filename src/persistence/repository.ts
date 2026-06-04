@@ -1,11 +1,20 @@
 import { sanitize } from "../domain/integrity";
 import type { Graph, MindEdge, MindNode } from "../domain/types";
-import { openMindMapDb, RECORD_KEY, STORE_NAME, type StoredGraph } from "./db";
+import type { Workspace } from "../domain/workspaces";
+import {
+  GRAPH_STORE,
+  META_ACTIVE_WORKSPACE_KEY,
+  META_PANEL_COLLAPSED_KEY,
+  META_STORE,
+  openMindMapDb,
+  type StoredGraph,
+  WORKSPACES_STORE,
+} from "./db";
 
-export async function loadGraph(): Promise<Graph | null> {
+export async function loadGraph(workspaceId: string): Promise<Graph | null> {
   const db = await openMindMapDb();
   try {
-    const record = await db.get(STORE_NAME, RECORD_KEY);
+    const record = await db.get(GRAPH_STORE, workspaceId);
     if (!record) {
       return null;
     }
@@ -15,16 +24,89 @@ export async function loadGraph(): Promise<Graph | null> {
   }
 }
 
-export async function saveGraph(graph: Graph): Promise<void> {
+export async function saveGraph(workspaceId: string, graph: Graph): Promise<void> {
   const db = await openMindMapDb();
   try {
     const record: StoredGraph = {
-      version: 1,
+      version: 2,
       nodes: graph.nodes,
       edges: graph.edges,
       updatedAt: Date.now(),
     };
-    await db.put(STORE_NAME, record, RECORD_KEY);
+    await db.put(GRAPH_STORE, record, workspaceId);
+  } finally {
+    db.close();
+  }
+}
+
+/** All workspaces, ordered by creation time (the list order shown in the panel). */
+export async function loadWorkspaces(): Promise<readonly Workspace[]> {
+  const db = await openMindMapDb();
+  try {
+    const all = await db.getAll(WORKSPACES_STORE);
+    return [...all].sort((a, b) => a.createdAt - b.createdAt);
+  } finally {
+    db.close();
+  }
+}
+
+export async function saveWorkspace(workspace: Workspace): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(WORKSPACES_STORE, workspace, workspace.id);
+  } finally {
+    db.close();
+  }
+}
+
+/** Delete a workspace together with its graph record, atomically. */
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    const tx = db.transaction([WORKSPACES_STORE, GRAPH_STORE], "readwrite");
+    await Promise.all([
+      tx.objectStore(WORKSPACES_STORE).delete(workspaceId),
+      tx.objectStore(GRAPH_STORE).delete(workspaceId),
+      tx.done,
+    ]);
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadActiveWorkspaceId(): Promise<string | null> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, META_ACTIVE_WORKSPACE_KEY);
+    return typeof value === "string" ? value : null;
+  } finally {
+    db.close();
+  }
+}
+
+export async function saveActiveWorkspaceId(workspaceId: string | null): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, workspaceId, META_ACTIVE_WORKSPACE_KEY);
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadPanelCollapsed(): Promise<boolean> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, META_PANEL_COLLAPSED_KEY);
+    return value === true;
+  } finally {
+    db.close();
+  }
+}
+
+export async function savePanelCollapsed(collapsed: boolean): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, collapsed, META_PANEL_COLLAPSED_KEY);
   } finally {
     db.close();
   }

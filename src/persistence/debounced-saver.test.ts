@@ -155,22 +155,19 @@ describe("createDebouncedSaver", () => {
 });
 
 describe("bindUnloadFlush", () => {
-  it("flushes on beforeunload and pagehide, and the unbind removes both listeners", async () => {
-    const save = vi.fn().mockResolvedValue(undefined);
-    const saver = createDebouncedSaver(save);
-
-    const flushSpy = vi.spyOn(saver, "flush");
-    const unbind = bindUnloadFlush(saver);
+  it("flushes on beforeunload and pagehide, and the unbind removes both listeners", () => {
+    const flush = vi.fn();
+    const unbind = bindUnloadFlush(flush);
 
     window.dispatchEvent(new Event("beforeunload"));
-    expect(flushSpy).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
 
     window.dispatchEvent(new Event("pagehide"));
-    expect(flushSpy).toHaveBeenCalledTimes(2);
+    expect(flush).toHaveBeenCalledTimes(2);
 
     unbind();
     window.dispatchEvent(new Event("beforeunload"));
     window.dispatchEvent(new Event("pagehide"));
-    expect(flushSpy).toHaveBeenCalledTimes(2);
+    expect(flush).toHaveBeenCalledTimes(2);
   });
 });

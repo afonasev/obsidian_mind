@@ -75,9 +75,14 @@ function defaultOnError(error: unknown): void {
   console.error("[debounced-saver] save failed", error);
 }
 
-export function bindUnloadFlush(saver: DebouncedSaver): () => void {
+/**
+ * Flush pending writes when the page is being torn down. Takes a `flush` callback
+ * rather than a saver so the caller (the store, which owns the saver) can route it
+ * through whatever pre-flush bookkeeping it needs.
+ */
+export function bindUnloadFlush(flush: () => void): () => void {
   const handler = (): void => {
-    void saver.flush();
+    flush();
   };
   window.addEventListener("beforeunload", handler);
   window.addEventListener("pagehide", handler);

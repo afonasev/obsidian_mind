@@ -2,13 +2,36 @@ import { createStore, type StoreApi, useStore } from "zustand";
 import * as graphOps from "../domain/graph";
 import { appendChildY, LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
 import type { Graph, NodeId, Position } from "../domain/types";
-import type { DebouncedSaver } from "../persistence/debounced-saver";
-import { loadGraph } from "../persistence/repository";
+import type { Workspace } from "../domain/workspaces";
+import * as workspaceOps from "../domain/workspaces";
+import { createDebouncedSaver, type DebouncedSaver } from "../persistence/debounced-saver";
+import * as repository from "../persistence/repository";
 
 // Upper bound on the undo/redo depth. Snapshots are immutable graph references
 // (no cloning), so the cost is one array slot per step — but we still cap it so
 // a long session does not grow the stack without limit.
 export const MAX_HISTORY = 100;
+
+// Fallback name for a workspace created via «+» whose name is left empty.
+export const DEFAULT_WORKSPACE_NAME = "Новое пространство";
+
+interface History {
+  readonly past: readonly Graph[];
+  readonly future: readonly Graph[];
+}
+
+/** Everything the store reads/writes through the persistence layer. */
+export interface MindMapPersistence {
+  loadGraph(workspaceId: string): Promise<Graph | null>;
+  saveGraph(workspaceId: string, graph: Graph): Promise<void>;
+  loadWorkspaces(): Promise<readonly Workspace[]>;
+  saveWorkspace(workspace: Workspace): Promise<void>;
+  deleteWorkspace(workspaceId: string): Promise<void>;
+  loadActiveWorkspaceId(): Promise<string | null>;
+  saveActiveWorkspaceId(workspaceId: string | null): Promise<void>;
+  loadPanelCollapsed(): Promise<boolean>;
+  savePanelCollapsed(collapsed: boolean): Promise<void>;
+}
 
 export interface MindMapState {
   readonly graph: Graph;
@@ -17,11 +40,25 @@ export interface MindMapState {
   // Node currently highlighted as a re-parent drop target while another node is
   // dragged over it. Transient UI state — not part of the undo history.
   readonly dropTargetId: NodeId | null;
-  // Undo/redo stacks of past/future graph snapshots. Kept in state (not closure)
-  // so a future toolbar can derive `canUndo`/`canRedo`, and tests can assert them.
+  // Undo/redo stacks of past/future graph snapshots for the ACTIVE workspace.
+  // Inactive workspaces' histories live in a closure Map (see `histories`).
   readonly past: readonly Graph[];
   readonly future: readonly Graph[];
-  loadFromStorage(): Promise<void>;
+  // Workspace registry. The visible graph/history always belongs to the active one.
+  readonly workspaces: readonly Workspace[];
+  readonly activeWorkspaceId: string | null;
+  // Workspace whose name is being edited inline in the panel (create or rename).
+  readonly editingWorkspaceId: string | null;
+  readonly panelCollapsed: boolean;
+  loadWorkspaces(): Promise<void>;
+  createWorkspace(): Promise<void>;
+  commitWorkspaceName(id: string, name: string): Promise<void>;
+  cancelWorkspaceName(id: string): Promise<void>;
+  startWorkspaceRename(id: string): void;
+  deleteWorkspace(id: string): Promise<void>;
+  selectWorkspace(id: string): Promise<void>;
+  togglePanel(): Promise<void>;
+  flush(): Promise<void>;
   addRoot(input: { readonly position: Position; readonly text?: string }): NodeId;
   addChild(input: {
     readonly parentId: NodeId;
@@ -48,14 +85,18 @@ export interface MindMapState {
 export type MindMapStore = StoreApi<MindMapState>;
 
 interface CreateMindMapStoreOptions {
-  readonly load?: () => Promise<Graph | null>;
+  readonly persistence?: MindMapPersistence;
+  readonly createSaver?: (save: (graph: Graph) => Promise<void>) => DebouncedSaver;
 }
 
 const keepSelection = (graph: Graph, id: NodeId | null): NodeId | null =>
   id !== null && graph.nodes.some((node) => node.id === id) ? id : null;
 
+const EMPTY_HISTORY: History = { past: [], future: [] };
+
 export function createMindMapStore(options: CreateMindMapStoreOptions = {}): MindMapStore {
-  const load = options.load ?? loadGraph;
+  const persistence: MindMapPersistence = options.persistence ?? repository;
+  const createSaver = options.createSaver ?? createDebouncedSaver;
 
   // Transient bookkeeping kept out of zustand state: changing it must not trigger
   // re-renders, and it never needs to be read by the UI.
@@ -69,8 +110,15 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
   let pendingNodeId: NodeId | null = null;
   // In-app clipboard for cut/copy/paste of whole subtrees (session-only).
   let clipboard: graphOps.Subtree | null = null;
+  // Undo/redo histories of inactive workspaces, by id (session-only, not persisted).
+  const histories = new Map<string, History>();
 
-  return createStore<MindMapState>((set, get) => {
+  // Assigned right after the store is created (the save closure needs the store
+  // to read the live active workspace id). Action bodies run later, so the
+  // forward reference is safe.
+  let saver: DebouncedSaver;
+
+  const store = createStore<MindMapState>((set, get) => {
     function historyAfterPush(prev: Graph): Pick<MindMapState, "past" | "future"> {
       const past = [...get().past, prev];
       // Drop the oldest entries past the cap; a new branch invalidates redo.
@@ -98,6 +146,37 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
     }
 
     /**
+     * Flush the pending graph write and stash the active workspace's history before
+     * the active workspace changes. Flushing matters because the debounced save
+     * resolves the target workspace id at write time — a leftover pending write
+     * would otherwise land under the new active id.
+     */
+    async function leaveActiveWorkspace(): Promise<void> {
+      await saver.flush();
+      const current = get().activeWorkspaceId;
+      if (current !== null) {
+        histories.set(current, { past: get().past, future: get().future });
+      }
+    }
+
+    /** Make `workspace` the active one, loading its graph and restoring its history. */
+    async function enterWorkspace(workspaceId: string): Promise<void> {
+      const loaded = await persistence.loadGraph(workspaceId);
+      const restored = histories.get(workspaceId) ?? EMPTY_HISTORY;
+      clearTransient();
+      set({
+        graph: loaded ?? graphOps.createEmpty(),
+        activeWorkspaceId: workspaceId,
+        past: restored.past,
+        future: restored.future,
+        selectedNodeId: null,
+        editingNodeId: null,
+        editingWorkspaceId: null,
+      });
+      await persistence.saveActiveWorkspaceId(workspaceId);
+    }
+
+    /**
      * Side-hint position for a new child of `parentId`: a root branches right by
      * default, a non-root continues its inherited side. Only the x sign matters —
      * the layout pass snaps the child to its real slot. Returns null if unknown.
@@ -119,16 +198,160 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       dropTargetId: null,
       past: [],
       future: [],
+      workspaces: [],
+      activeWorkspaceId: null,
+      editingWorkspaceId: null,
+      panelCollapsed: false,
 
-      async loadFromStorage() {
-        const loaded = await load();
-        if (loaded === null) {
+      async loadWorkspaces() {
+        const [workspaces, storedActiveId, panelCollapsed] = await Promise.all([
+          persistence.loadWorkspaces(),
+          persistence.loadActiveWorkspaceId(),
+          persistence.loadPanelCollapsed(),
+        ]);
+        // A stored active id that no longer exists (deleted) falls back to "none".
+        const activeWorkspaceId =
+          storedActiveId !== null && workspaces.some((w) => w.id === storedActiveId)
+            ? storedActiveId
+            : null;
+        const graph =
+          activeWorkspaceId !== null
+            ? ((await persistence.loadGraph(activeWorkspaceId)) ?? graphOps.createEmpty())
+            : graphOps.createEmpty();
+        clearTransient();
+        histories.clear();
+        set({
+          workspaces,
+          activeWorkspaceId,
+          panelCollapsed,
+          graph,
+          past: [],
+          future: [],
+          selectedNodeId: null,
+          editingNodeId: null,
+          editingWorkspaceId: null,
+        });
+      },
+
+      async createWorkspace() {
+        await leaveActiveWorkspace();
+        const workspace: Workspace = {
+          id: crypto.randomUUID(),
+          name: "",
+          createdAt: Date.now(),
+        };
+        clearTransient();
+        set({
+          workspaces: workspaceOps.createWorkspace(get().workspaces, workspace),
+          activeWorkspaceId: workspace.id,
+          editingWorkspaceId: workspace.id,
+          graph: graphOps.createEmpty(),
+          past: [],
+          future: [],
+          selectedNodeId: null,
+          editingNodeId: null,
+        });
+        await persistence.saveWorkspace(workspace);
+        await persistence.saveActiveWorkspaceId(workspace.id);
+      },
+
+      async commitWorkspaceName(id, name) {
+        const workspace = get().workspaces.find((w) => w.id === id);
+        if (workspace === undefined) {
+          set({ editingWorkspaceId: null });
           return;
         }
-        set({ graph: loaded });
+        // A freshly created workspace still carries an empty name; renaming an
+        // existing one to empty is rejected, but a fresh one defaults instead.
+        const isFresh = workspace.name === "";
+        const finalName = name.trim() === "" ? (isFresh ? DEFAULT_WORKSPACE_NAME : null) : name;
+        if (finalName === null) {
+          set({ editingWorkspaceId: null });
+          return;
+        }
+        const updated: Workspace = { ...workspace, name: finalName };
+        set({
+          workspaces: workspaceOps.renameWorkspace(get().workspaces, id, finalName),
+          editingWorkspaceId: null,
+        });
+        await persistence.saveWorkspace(updated);
+      },
+
+      async cancelWorkspaceName(id) {
+        const workspace = get().workspaces.find((w) => w.id === id);
+        // Leaving a fresh (still nameless) workspace must not strand it without a
+        // name — fall back to the default; an existing one just keeps its name.
+        if (workspace !== undefined && workspace.name === "") {
+          const updated: Workspace = { ...workspace, name: DEFAULT_WORKSPACE_NAME };
+          set({
+            workspaces: workspaceOps.renameWorkspace(get().workspaces, id, DEFAULT_WORKSPACE_NAME),
+            editingWorkspaceId: null,
+          });
+          await persistence.saveWorkspace(updated);
+          return;
+        }
+        set({ editingWorkspaceId: null });
+      },
+
+      startWorkspaceRename(id) {
+        set({ editingWorkspaceId: id });
+      },
+
+      async deleteWorkspace(id) {
+        // Flush first: a leftover pending write would otherwise resurrect the
+        // graph we are about to delete (or land under the next active id).
+        await saver.flush();
+        const wasActive = get().activeWorkspaceId === id;
+        const neighbor = wasActive ? workspaceOps.neighborOf(get().workspaces, id) : null;
+        histories.delete(id);
+        set({
+          workspaces: workspaceOps.removeWorkspace(get().workspaces, id),
+          editingWorkspaceId: get().editingWorkspaceId === id ? null : get().editingWorkspaceId,
+        });
+        await persistence.deleteWorkspace(id);
+        if (!wasActive) {
+          return;
+        }
+        if (neighbor !== null) {
+          await enterWorkspace(neighbor.id);
+          return;
+        }
+        // Deleted the last (or only) workspace — drop into the empty state.
+        clearTransient();
+        set({
+          graph: graphOps.createEmpty(),
+          activeWorkspaceId: null,
+          past: [],
+          future: [],
+          selectedNodeId: null,
+          editingNodeId: null,
+        });
+        await persistence.saveActiveWorkspaceId(null);
+      },
+
+      async selectWorkspace(id) {
+        if (id === get().activeWorkspaceId) {
+          return;
+        }
+        await leaveActiveWorkspace();
+        await enterWorkspace(id);
+      },
+
+      async togglePanel() {
+        const next = !get().panelCollapsed;
+        set({ panelCollapsed: next });
+        await persistence.savePanelCollapsed(next);
+      },
+
+      async flush() {
+        await saver.flush();
       },
 
       addRoot(input) {
+        // Roots belong to a workspace; with none active, creation is disabled.
+        if (get().activeWorkspaceId === null) {
+          return "";
+        }
         const prev = get().graph;
         const result = graphOps.addRoot(prev, input);
         // Defer history: the fresh node is a pending transaction committed on
@@ -145,6 +368,9 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       },
 
       addChild(input) {
+        if (get().activeWorkspaceId === null) {
+          return "";
+        }
         const prev = get().graph;
         const result = graphOps.addChild(prev, input);
         pendingBaseline = prev;
@@ -342,19 +568,28 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       },
     };
   });
-}
 
-/**
- * Wires graph mutations to a debounced saver. Returns an unbind function.
- */
-export function bindSaver(store: MindMapStore, saver: DebouncedSaver): () => void {
+  // The save closure resolves the target workspace at write time. Combined with
+  // the flush-before-switch in leaveActiveWorkspace/deleteWorkspace, the graph
+  // always lands under the workspace that owned it.
+  saver = createSaver((graph) => {
+    const id = store.getState().activeWorkspaceId;
+    return id === null ? Promise.resolve() : persistence.saveGraph(id, graph);
+  });
+
+  // Autosave: schedule a debounced write whenever the graph reference changes.
+  // The subscription lives for the store's lifetime — the singleton persists for
+  // the page, and test-created stores use a no-op saver, so there is nothing to
+  // tear down.
   let previousGraph = store.getState().graph;
-  return store.subscribe((state) => {
+  store.subscribe((state) => {
     if (state.graph !== previousGraph) {
       previousGraph = state.graph;
       saver.schedule(state.graph);
     }
   });
+
+  return store;
 }
 
 export const mindMapStore = createMindMapStore();
