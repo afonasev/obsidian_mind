@@ -1,0 +1,97 @@
+.node {
+  position: relative;
+  min-width: 120px;
+  max-width: 360px;
+  padding: 12px 18px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  border: 2px solid transparent;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.4;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  cursor: default;
+  user-select: none;
+}
+
+.root {
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.node:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+
+.selected {
+  border-color: #4f80ff;
+}
+
+.editing {
+  border-color: #4f80ff;
+  background: #f6f9ff;
+}
+
+/* Highlighted while another node is dragged over this one as a re-parent target. */
+.dropTarget {
+  border-color: #4f80ff;
+  background: #e7eefc;
+  filter: brightness(0.94);
+}
+
+.text {
+  display: block;
+  min-height: 1.4em;
+}
+
+.placeholder {
+  color: #98a2b3;
+}
+
+.input {
+  width: auto;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  text-align: center;
+}
+
+.addButton {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: #4f80ff;
+  color: #ffffff;
+  font-size: 18px;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  /* Stack above the React Flow handles, which sit at the same edges. */
+  z-index: 1;
+}
+
+.addButtonRight {
+  right: -14px;
+}
+
+.addButtonLeft {
+  left: -14px;
+}
+
+.node:hover .addButton,
+.selected .addButton {
+  display: flex;
+}

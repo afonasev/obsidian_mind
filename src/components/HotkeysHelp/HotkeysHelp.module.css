@@ -1,0 +1,97 @@
+.help {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+}
+
+.toggle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid #d0d0d8;
+  background: #ffffff;
+  color: #444;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.toggle:hover {
+  background: #f3f3f7;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+}
+
+.panel {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  width: 320px;
+  max-width: 90vw;
+  padding: 16px;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  border: 1px solid #e2e2ea;
+}
+
+.title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #222;
+}
+
+.list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.keys {
+  margin: 0;
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #333;
+  white-space: nowrap;
+}
+
+.description {
+  margin: 0;
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 13px;
+  color: #555;
+}
+
+.close {
+  margin-top: 14px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #d0d0d8;
+  background: #f3f3f7;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.close:hover {
+  background: #e8e8ef;
+}

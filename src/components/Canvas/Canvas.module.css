@@ -1,0 +1,27 @@
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* React Flow paints visible source/target dots and its own selection outline on every node;
+   our CloudNode owns its own selection state and we don't want these defaults stacking on top. */
+.canvas :global(.react-flow__handle) {
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.canvas :global(.react-flow__node.selected),
+.canvas :global(.react-flow__node:focus),
+.canvas :global(.react-flow__node:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
