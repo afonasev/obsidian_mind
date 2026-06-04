@@ -208,6 +208,33 @@ describe("handleCanvasKeyDown", () => {
     expect(leftSiblings).toHaveLength(2);
   });
 
+  it("Enter inserts the new sibling directly below the selected one, not at the bottom", () => {
+    let rootId = "";
+    let firstId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      firstId = mindMapStore.getState().addChild({
+        parentId: rootId,
+        position: { x: 10, y: 0 },
+        text: "first",
+      });
+      mindMapStore.getState().stopEditing();
+      mindMapStore
+        .getState()
+        .addChild({ parentId: rootId, position: { x: 10, y: 0 }, text: "last" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(firstId);
+    });
+    handleCanvasKeyDown(fakeEvent("Enter"));
+    const newId = mindMapStore.getState().editingNodeId;
+    const siblings = mindMapStore
+      .getState()
+      .graph.nodes.filter((n) => n.parentId === rootId)
+      .sort((a, b) => a.position.y - b.position.y);
+    // The freshly created node sits at index 1 — right after "first", before "last".
+    expect(siblings[1]?.id).toBe(newId);
+  });
+
   it("Cmd+Enter on a right-side non-root extends the right subtree", () => {
     let rootId = "";
     let rightChildId = "";
