@@ -18,6 +18,7 @@ import { findNeighbor, type NavigationDirection } from "../../domain/navigation"
 import type { Graph, MindEdge, MindNode, NodeId, Position } from "../../domain/types";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
 import { CloudNode, type CloudNodeType } from "../CloudNode/CloudNode";
+import { FocusNav } from "../FocusNav/FocusNav";
 import { HotkeysHelp } from "../HotkeysHelp/HotkeysHelp";
 import styles from "./Canvas.module.css";
 
@@ -104,6 +105,7 @@ function CanvasInner(): JSX.Element {
       >
         <Controls />
       </ReactFlow>
+      <FocusNav />
       {hasActiveWorkspace ? null : (
         <div className={styles.emptyHint} role="note">
           Создайте пространство, чтобы начать работу
@@ -263,6 +265,21 @@ export function handleCanvasKeyDown(event: KeyboardEvent): void {
       }
       return;
     }
+  }
+  // Alt+←/→ or Cmd/Ctrl+←/→ walk the focus history (Назад/Вперёд). Checked before
+  // the plain-arrow spatial navigation below so the modifier diverts only these two
+  // combos; the Cmd/Ctrl block above ignores arrows and falls through to here.
+  if (
+    (event.altKey || event.metaKey || event.ctrlKey) &&
+    (event.key === "ArrowLeft" || event.key === "ArrowRight")
+  ) {
+    event.preventDefault();
+    if (event.key === "ArrowLeft") {
+      void state.goBack();
+    } else {
+      void state.goForward();
+    }
+    return;
   }
   const arrow = arrowDirection(event.key);
   if (arrow !== null) {

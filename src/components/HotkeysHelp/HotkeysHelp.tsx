@@ -15,6 +15,8 @@ const HOTKEYS: readonly Hotkey[] = [
   { keys: "Перетаскивание", description: "Двигать узел; менять порядок и сторону веток" },
   { keys: "Перетащить на узел", description: "Сделать перетаскиваемый узел дочерним" },
   { keys: "← ↑ → ↓", description: "Перемещать выделение между узлами" },
+  { keys: "Alt / Cmd / Ctrl + ←", description: "Назад по истории фокуса" },
+  { keys: "Alt / Cmd / Ctrl + →", description: "Вперёд по истории фокуса" },
   { keys: "Delete / Backspace", description: "Удалить узел вместе с поддеревом" },
   { keys: "Cmd/Ctrl + C", description: "Копировать узел с поддеревом" },
   { keys: "Cmd/Ctrl + X", description: "Вырезать узел с поддеревом" },

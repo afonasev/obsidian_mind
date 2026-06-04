@@ -777,6 +777,212 @@ describe("deleteWorkspace", () => {
   });
 });
 
+describe("focus history (goBack / goForward)", () => {
+  /** A store with one named workspace active; returns it and the workspace id. */
+  async function oneWorkspace(): Promise<{ store: MindMapStore; id: string }> {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const id = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(id, "W");
+    return { store, id };
+  }
+
+  /** Create a root, finish its editing, then select it so it lands in the history. */
+  function addAndSelectRoot(store: MindMapStore, x: number): NodeId {
+    const nodeId = store.getState().addRoot({ position: { x, y: 0 } });
+    store.getState().stopEditing();
+    store.getState().selectNode(nodeId);
+    return nodeId;
+  }
+
+  it("records a focus point when a node is selected", async () => {
+    const { store, id } = await oneWorkspace();
+    const nodeId = addAndSelectRoot(store, 0);
+    expect(store.getState().navHistory).toEqual([{ workspaceId: id, nodeId }]);
+    expect(store.getState().navCursor).toBe(0);
+  });
+
+  it("does not record a deselect or a selection without an active workspace", () => {
+    const { store } = makeStore();
+    // No active workspace: a stray select still updates the selection but not history.
+    store.getState().selectNode("ghost");
+    expect(store.getState().selectedNodeId).toBe("ghost");
+    expect(store.getState().navHistory).toHaveLength(0);
+    store.getState().selectNode(null);
+    expect(store.getState().navHistory).toHaveLength(0);
+  });
+
+  it("does not duplicate the entry when the same node is re-selected", async () => {
+    const { store } = await oneWorkspace();
+    const nodeId = addAndSelectRoot(store, 0);
+    store.getState().selectNode(nodeId);
+    expect(store.getState().navHistory).toHaveLength(1);
+  });
+
+  it("steps back then forward through nodes in one workspace", async () => {
+    const { store } = await oneWorkspace();
+    const a = addAndSelectRoot(store, 0);
+    const b = addAndSelectRoot(store, 100);
+    expect(store.getState().navCursor).toBe(1);
+
+    await store.getState().goBack();
+    expect(store.getState().selectedNodeId).toBe(a);
+    expect(store.getState().navCursor).toBe(0);
+
+    await store.getState().goForward();
+    expect(store.getState().selectedNodeId).toBe(b);
+    expect(store.getState().navCursor).toBe(1);
+  });
+
+  it("is a no-op at the start and end boundaries of the history", async () => {
+    const { store } = await oneWorkspace();
+    const a = addAndSelectRoot(store, 0);
+    addAndSelectRoot(store, 100);
+    await store.getState().goBack();
+    // Already at the first entry — a second back changes nothing.
+    await store.getState().goBack();
+    expect(store.getState().selectedNodeId).toBe(a);
+    expect(store.getState().navCursor).toBe(0);
+  });
+
+  it("truncates the forward tail when a new node is selected after going back", async () => {
+    const { store } = await oneWorkspace();
+    addAndSelectRoot(store, 0);
+    addAndSelectRoot(store, 100);
+    await store.getState().goBack();
+    const c = addAndSelectRoot(store, 200);
+    expect(store.getState().navHistory.map((e) => e.nodeId)).toEqual([
+      store.getState().navHistory[0]?.nodeId,
+      c,
+    ]);
+    expect(store.getState().navCursor).toBe(1);
+  });
+
+  it("navigates back and forward across a workspace boundary", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const wa = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(wa, "A");
+    const a = addAndSelectRoot(store, 0);
+
+    await store.getState().createWorkspace();
+    const wb = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(wb, "B");
+    const b = addAndSelectRoot(store, 0);
+
+    await store.getState().goBack();
+    expect(store.getState().activeWorkspaceId).toBe(wa);
+    expect(store.getState().selectedNodeId).toBe(a);
+
+    await store.getState().goForward();
+    expect(store.getState().activeWorkspaceId).toBe(wb);
+    expect(store.getState().selectedNodeId).toBe(b);
+  });
+
+  it("snaps back to the cursor entry after switching workspace without selecting", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const wa = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(wa, "A");
+    addAndSelectRoot(store, 0);
+    await store.getState().createWorkspace();
+    const wb = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(wb, "B");
+    const b = addAndSelectRoot(store, 0);
+
+    // Switch away without selecting a node in A: the visible state no longer
+    // matches the cursor, so the first back must snap onto b@B, not jump past it.
+    await store.getState().selectWorkspace(wa);
+    await store.getState().goBack();
+    expect(store.getState().activeWorkspaceId).toBe(wb);
+    expect(store.getState().selectedNodeId).toBe(b);
+    expect(store.getState().navCursor).toBe(1);
+  });
+
+  it("snaps back to the cursor entry after a deselect", async () => {
+    const { store } = await oneWorkspace();
+    addAndSelectRoot(store, 0);
+    const b = addAndSelectRoot(store, 100);
+    store.getState().selectNode(null);
+    await store.getState().goBack();
+    expect(store.getState().selectedNodeId).toBe(b);
+    expect(store.getState().navCursor).toBe(1);
+  });
+
+  it("steps over a deleted node when navigating back", async () => {
+    const { store } = await oneWorkspace();
+    const a = addAndSelectRoot(store, 0);
+    const b = addAndSelectRoot(store, 100);
+    addAndSelectRoot(store, 200);
+    store.getState().removeSubtree(b);
+    await store.getState().goBack();
+    // b is gone — back skips it and lands on a.
+    expect(store.getState().selectedNodeId).toBe(a);
+    expect(store.getState().navCursor).toBe(0);
+  });
+
+  it("steps over an entry whose workspace no longer exists", async () => {
+    const { store, id } = await oneWorkspace();
+    const a = addAndSelectRoot(store, 0);
+    const b = addAndSelectRoot(store, 100);
+    // Inject a middle entry pointing at a workspace that is not registered — the
+    // defensive guard in focusNavEntry must skip it rather than trying to load it.
+    store.setState({
+      navHistory: [
+        { workspaceId: id, nodeId: a },
+        { workspaceId: "gone", nodeId: "x" },
+        { workspaceId: id, nodeId: b },
+      ],
+      navCursor: 2,
+    });
+    await store.getState().goBack();
+    expect(store.getState().selectedNodeId).toBe(a);
+    expect(store.getState().navCursor).toBe(0);
+  });
+
+  it("prunes a deleted workspace's entries and keeps the cursor valid", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const wa = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(wa, "A");
+    addAndSelectRoot(store, 0);
+    await store.getState().createWorkspace();
+    const wb = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(wb, "B");
+    const b = addAndSelectRoot(store, 0);
+
+    await store.getState().deleteWorkspace(wa);
+    expect(store.getState().navHistory).toEqual([{ workspaceId: wb, nodeId: b }]);
+    expect(store.getState().navCursor).toBe(0);
+  });
+
+  it("ignores a second navigation while one is already in flight", async () => {
+    const { store } = await oneWorkspace();
+    const a = addAndSelectRoot(store, 0);
+    addAndSelectRoot(store, 100);
+    // Fire two back-steps without awaiting the first: the second sees the
+    // `navigating` flag still raised and bails out, so only one step happens.
+    const first = store.getState().goBack();
+    const second = store.getState().goBack();
+    await Promise.all([first, second]);
+    expect(store.getState().selectedNodeId).toBe(a);
+    expect(store.getState().navCursor).toBe(0);
+  });
+
+  it("resets the focus history on loadWorkspaces", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().createWorkspace();
+    addAndSelectRoot(store, 0);
+    expect(store.getState().navHistory.length).toBeGreaterThan(0);
+    // Make the stored workspace loadable so loadWorkspaces has something to restore.
+    await store.getState().flush();
+    await store.getState().loadWorkspaces();
+    expect(store.getState().navHistory).toHaveLength(0);
+    expect(store.getState().navCursor).toBe(-1);
+    expect(persistence.loadWorkspaces).toHaveBeenCalled();
+  });
+});
+
 describe("togglePanel", () => {
   it("flips and persists the collapsed state", async () => {
     const { store, persistence } = makeStore();

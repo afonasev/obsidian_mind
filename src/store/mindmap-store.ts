@@ -1,6 +1,8 @@
 import { createStore, type StoreApi, useStore } from "zustand";
 import * as graphOps from "../domain/graph";
 import { appendChildY, LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
+import type { NavEntry } from "../domain/nav-history";
+import * as navHistory from "../domain/nav-history";
 import type { Graph, NodeId, Position } from "../domain/types";
 import type { Workspace } from "../domain/workspaces";
 import * as workspaceOps from "../domain/workspaces";
@@ -44,6 +46,11 @@ export interface MindMapState {
   // Inactive workspaces' histories live in a closure Map (see `histories`).
   readonly past: readonly Graph[];
   readonly future: readonly Graph[];
+  // Focus history — a single timeline of visited (workspace, node) points across
+  // ALL workspaces, orthogonal to undo/redo (which only revert graph changes).
+  // Session-only, not persisted. `navCursor` is -1 when the history is empty.
+  readonly navHistory: readonly NavEntry[];
+  readonly navCursor: number;
   // Workspace registry. The visible graph/history always belongs to the active one.
   readonly workspaces: readonly Workspace[];
   readonly activeWorkspaceId: string | null;
@@ -80,6 +87,8 @@ export interface MindMapState {
   stopEditing(): void;
   undo(): void;
   redo(): void;
+  goBack(): Promise<void>;
+  goForward(): Promise<void>;
 }
 
 export type MindMapStore = StoreApi<MindMapState>;
@@ -110,6 +119,11 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
   let pendingNodeId: NodeId | null = null;
   // In-app clipboard for cut/copy/paste of whole subtrees (session-only).
   let clipboard: graphOps.Subtree | null = null;
+  // True while a goBack/goForward transition is in flight. Kept out of zustand
+  // (must not re-render): it mutes focus-history recording during the programmatic
+  // selectNode of the transition, and makes a second arrow-press a no-op until the
+  // first finishes (the cross-workspace graph load is async).
+  let navigating = false;
   // Undo/redo histories of inactive workspaces, by id (session-only, not persisted).
   const histories = new Map<string, History>();
 
@@ -191,6 +205,67 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       return { x: node.position.x + dx * LAYOUT_HSTEP, y: appendChildY(graph, parentId) };
     }
 
+    /**
+     * Focus the entry: switch workspace (loading its graph) if needed, then select
+     * the node. Returns false for a broken entry — its workspace was deleted or its
+     * node no longer exists — so the caller can step over it in the same direction.
+     */
+    async function focusNavEntry(entry: NavEntry): Promise<boolean> {
+      if (!get().workspaces.some((w) => w.id === entry.workspaceId)) {
+        return false;
+      }
+      if (entry.workspaceId !== get().activeWorkspaceId) {
+        // selectWorkspace flushes the current graph and loads the target's; the
+        // node-existence check below runs against the freshly loaded graph.
+        await get().selectWorkspace(entry.workspaceId);
+      }
+      if (!get().graph.nodes.some((n) => n.id === entry.nodeId)) {
+        return false;
+      }
+      get().selectNode(entry.nodeId);
+      return true;
+    }
+
+    /** Shared body of goBack/goForward. See design §3–§5 for the cursor rules. */
+    async function navigateHistory(direction: "back" | "forward"): Promise<void> {
+      // A second press before the first transition's async graph load finishes is
+      // dropped — without this guard it would read a stale cursor and double-step.
+      if (navigating) {
+        return;
+      }
+      const { navHistory: history, navCursor: cursor, activeWorkspaceId, selectedNodeId } = get();
+      const cursorEntry = history[cursor];
+      // When the visible (workspace, node) no longer equals the cursor entry — a
+      // workspace switch or a deselect happened — the first step snaps back onto
+      // the cursor instead of skipping past it (design §4).
+      const matchesCursor =
+        cursorEntry !== undefined &&
+        cursorEntry.workspaceId === activeWorkspaceId &&
+        cursorEntry.nodeId === selectedNodeId;
+      const state = { history, cursor };
+      const target =
+        direction === "back"
+          ? navHistory.back(state, matchesCursor)
+          : navHistory.forward(state, matchesCursor);
+      // Candidate (index, entry) pairs to try, ordered from `target` onward in the
+      // travel direction. Broken entries are skipped; the first focusable one wins.
+      // An out-of-range target (boundary) yields an empty list — a safe no-op.
+      const indexed = [...history.entries()];
+      const candidates =
+        direction === "back" ? indexed.slice(0, target + 1).reverse() : indexed.slice(target);
+      navigating = true;
+      try {
+        for (const [index, entry] of candidates) {
+          if (await focusNavEntry(entry)) {
+            set({ navCursor: index });
+            return;
+          }
+        }
+      } finally {
+        navigating = false;
+      }
+    }
+
     return {
       graph: graphOps.createEmpty(),
       selectedNodeId: null,
@@ -198,6 +273,8 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       dropTargetId: null,
       past: [],
       future: [],
+      navHistory: [],
+      navCursor: -1,
       workspaces: [],
       activeWorkspaceId: null,
       editingWorkspaceId: null,
@@ -227,6 +304,8 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           graph,
           past: [],
           future: [],
+          navHistory: [],
+          navCursor: -1,
           selectedNodeId: null,
           editingNodeId: null,
           editingWorkspaceId: null,
@@ -304,9 +383,17 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         const wasActive = get().activeWorkspaceId === id;
         const neighbor = wasActive ? workspaceOps.neighborOf(get().workspaces, id) : null;
         histories.delete(id);
+        // Purge the deleted workspace's focus points so navigation never lands on
+        // a vanished workspace; the cursor is moved onto a surviving entry.
+        const pruned = navHistory.pruneWorkspace(
+          { history: get().navHistory, cursor: get().navCursor },
+          id,
+        );
         set({
           workspaces: workspaceOps.removeWorkspace(get().workspaces, id),
           editingWorkspaceId: get().editingWorkspaceId === id ? null : get().editingWorkspaceId,
+          navHistory: pruned.history,
+          navCursor: pruned.cursor,
         });
         await persistence.deleteWorkspace(id);
         if (!wasActive) {
@@ -514,6 +601,18 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
 
       selectNode(nodeId) {
         coalesceKey = null;
+        const workspaceId = get().activeWorkspaceId;
+        // Record a focus point only for a real selection (not a deselect) made by
+        // the user — `navigating` mutes the programmatic select of a back/forward
+        // transition so it does not loop the history back onto itself.
+        if (nodeId !== null && !navigating && workspaceId !== null) {
+          const next = navHistory.record(
+            { history: get().navHistory, cursor: get().navCursor },
+            { workspaceId, nodeId },
+          );
+          set({ selectedNodeId: nodeId, navHistory: next.history, navCursor: next.cursor });
+          return;
+        }
         set({ selectedNodeId: nodeId });
       },
 
@@ -565,6 +664,14 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           editingNodeId: null,
           selectedNodeId: keepSelection(next, get().selectedNodeId),
         });
+      },
+
+      async goBack() {
+        await navigateHistory("back");
+      },
+
+      async goForward() {
+        await navigateHistory("forward");
       },
     };
   });

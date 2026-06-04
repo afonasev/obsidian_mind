@@ -23,6 +23,14 @@ describe("HotkeysHelp", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("lists the focus-history shortcuts", async () => {
+    const user = userEvent.setup();
+    render(<HotkeysHelp />);
+    await user.click(screen.getByRole("button", { name: "Горячие клавиши" }));
+    expect(screen.getByText("Назад по истории фокуса")).toBeInTheDocument();
+    expect(screen.getByText("Вперёд по истории фокуса")).toBeInTheDocument();
+  });
+
   it("closes when the backdrop is clicked", async () => {
     const user = userEvent.setup();
     render(<HotkeysHelp />);

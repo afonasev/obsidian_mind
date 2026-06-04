@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mindMapStore } from "../../store/mindmap-store";
 import type { CloudNodeType } from "../CloudNode/CloudNode";
@@ -145,7 +145,7 @@ describe("handleCanvasKeyDown", () => {
   type FakeEvent = KeyboardEvent & { preventDefault: ReturnType<typeof vi.fn> };
   function fakeEvent(
     key: string,
-    options: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
+    options: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean } = {},
   ): FakeEvent {
     const preventDefault = vi.fn();
     return {
@@ -154,6 +154,7 @@ describe("handleCanvasKeyDown", () => {
       shiftKey: options.shiftKey === true,
       metaKey: options.metaKey === true,
       ctrlKey: options.ctrlKey === true,
+      altKey: options.altKey === true,
     } as unknown as FakeEvent;
   }
 
@@ -406,6 +407,84 @@ describe("handleCanvasKeyDown", () => {
     expect(mindMapStore.getState().selectedNodeId).toBe(rightChildId);
     handleCanvasKeyDown(fakeEvent("ArrowLeft"));
     expect(mindMapStore.getState().selectedNodeId).toBe(rootId);
+  });
+
+  it("Alt+ArrowLeft walks the focus history back without moving the selection spatially", async () => {
+    let a = "";
+    act(() => {
+      a = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "A" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(a);
+      const b = mindMapStore.getState().addRoot({ position: { x: 200, y: 0 }, text: "B" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(b);
+    });
+    const event = fakeEvent("ArrowLeft", { altKey: true });
+    handleCanvasKeyDown(event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mindMapStore.getState().selectedNodeId).toBe(a);
+    });
+  });
+
+  it("Alt+ArrowRight walks the focus history forward", async () => {
+    let b = "";
+    act(() => {
+      const a = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "A" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(a);
+      b = mindMapStore.getState().addRoot({ position: { x: 200, y: 0 }, text: "B" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(b);
+    });
+    await act(async () => {
+      await mindMapStore.getState().goBack();
+    });
+    const event = fakeEvent("ArrowRight", { altKey: true });
+    handleCanvasKeyDown(event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mindMapStore.getState().selectedNodeId).toBe(b);
+    });
+  });
+
+  it("Cmd+ArrowLeft also walks the focus history back", async () => {
+    let a = "";
+    act(() => {
+      a = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "A" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(a);
+      const b = mindMapStore.getState().addRoot({ position: { x: 200, y: 0 }, text: "B" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(b);
+    });
+    const event = fakeEvent("ArrowLeft", { metaKey: true });
+    handleCanvasKeyDown(event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mindMapStore.getState().selectedNodeId).toBe(a);
+    });
+  });
+
+  it("Ctrl+ArrowRight also walks the focus history forward", async () => {
+    let b = "";
+    act(() => {
+      const a = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "A" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(a);
+      b = mindMapStore.getState().addRoot({ position: { x: 200, y: 0 }, text: "B" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(b);
+    });
+    await act(async () => {
+      await mindMapStore.getState().goBack();
+    });
+    const event = fakeEvent("ArrowRight", { ctrlKey: true });
+    handleCanvasKeyDown(event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mindMapStore.getState().selectedNodeId).toBe(b);
+    });
   });
 
   it("arrow keys anchor on the first root when nothing is selected yet", () => {
