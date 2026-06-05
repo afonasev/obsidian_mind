@@ -18,6 +18,11 @@ export const META_EDITOR_WIDTH_KEY = "editorPanelWidth";
 // Ids of workspaces whose root list is collapsed in the panel (absent = expanded).
 export const META_COLLAPSED_ROOTS_KEY = "collapsedWorkspaceRoots";
 
+/** Key for the per-workspace list of collapsed node ids inside the `meta` store. */
+export function collapsedNodesKey(workspaceId: string): string {
+  return `collapsedNodes:${workspaceId}`;
+}
+
 export interface MindMapDb {
   graph: {
     // One graph record per workspace, keyed by workspace id.

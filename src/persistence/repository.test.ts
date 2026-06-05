@@ -3,11 +3,19 @@ import { openDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Graph } from "../domain/types";
 import type { Workspace } from "../domain/workspaces";
-import { DB_NAME, GRAPH_STORE, openMindMapDb, WORKSPACES_STORE } from "./db";
+import {
+  collapsedNodesKey,
+  DB_NAME,
+  GRAPH_STORE,
+  META_STORE,
+  openMindMapDb,
+  WORKSPACES_STORE,
+} from "./db";
 import {
   deleteWorkspace,
   loadActiveWorkspaceId,
   loadAllRoots,
+  loadCollapsedNodes,
   loadCollapsedRoots,
   loadEditorCollapsed,
   loadEditorWidth,
@@ -16,6 +24,7 @@ import {
   loadPanelWidth,
   loadWorkspaces,
   saveActiveWorkspaceId,
+  saveCollapsedNodes,
   saveCollapsedRoots,
   saveEditorCollapsed,
   saveEditorWidth,
@@ -192,6 +201,17 @@ describe("workspaces CRUD", () => {
     expect(await loadWorkspaces()).toEqual([]);
     expect(await loadGraph("a")).toBeNull();
   });
+
+  it("deleteWorkspace removes the workspace's collapsed-nodes record", async () => {
+    await saveWorkspace(ws("a"));
+    await saveCollapsedNodes("a", ["n1"]);
+    await deleteWorkspace("a");
+    const db = await openMindMapDb();
+    const record = await db.get(META_STORE, collapsedNodesKey("a"));
+    db.close();
+    expect(record).toBeUndefined();
+    expect(await loadCollapsedNodes("a")).toEqual([]);
+  });
 });
 
 describe("loadAllRoots", () => {
@@ -292,6 +312,24 @@ describe("meta", () => {
     expect(await loadCollapsedRoots()).toEqual(["a", "b"]);
     await saveCollapsedRoots([]);
     expect(await loadCollapsedRoots()).toEqual([]);
+  });
+
+  it("returns an empty collapsed-nodes list when no record exists", async () => {
+    expect(await loadCollapsedNodes("w1")).toEqual([]);
+  });
+
+  it("round-trips a per-workspace collapsed-nodes list", async () => {
+    await saveCollapsedNodes("w1", ["n1", "n2"]);
+    expect(await loadCollapsedNodes("w1")).toEqual(["n1", "n2"]);
+    await saveCollapsedNodes("w1", []);
+    expect(await loadCollapsedNodes("w1")).toEqual([]);
+  });
+
+  it("keeps collapsed-nodes lists isolated per workspace", async () => {
+    await saveCollapsedNodes("w1", ["n1"]);
+    await saveCollapsedNodes("w2", ["n9"]);
+    expect(await loadCollapsedNodes("w1")).toEqual(["n1"]);
+    expect(await loadCollapsedNodes("w2")).toEqual(["n9"]);
   });
 });
 

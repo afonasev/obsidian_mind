@@ -39,10 +39,28 @@ function CanvasInner(): JSX.Element {
   // No active workspace ⇒ there is nowhere to put roots; show a hint instead.
   const hasActiveWorkspace = useMindMapStore((state) => state.activeWorkspaceId !== null);
   const reveal = useMindMapStore((state) => state.reveal);
+  const collapsedNodeIds = useMindMapStore((state) => state.collapsedNodeIds);
   const { screenToFlowPosition, fitView } = useReactFlow();
 
-  const nodes = useMemo(() => toRFNodes(graph, selectedNodeId), [graph, selectedNodeId]);
-  const edges = useMemo(() => toRFEdges(graph), [graph]);
+  // Ids hidden by collapse: every collapsed node's subtree minus the node itself
+  // (the collapsed node stays visible; only its descendants hide).
+  const hidden = useMemo(() => {
+    const set = new Set<NodeId>();
+    for (const id of collapsedNodeIds) {
+      for (const descendant of subtreeIds(graph, id)) {
+        if (descendant !== id) {
+          set.add(descendant);
+        }
+      }
+    }
+    return set;
+  }, [graph, collapsedNodeIds]);
+
+  const nodes = useMemo(
+    () => toRFNodes(graph, selectedNodeId, hidden),
+    [graph, selectedNodeId, hidden],
+  );
+  const edges = useMemo(() => toRFEdges(graph, hidden), [graph, hidden]);
 
   const onNodesChange = useCallback<OnNodesChange<CloudNodeType>>(applyNodesChange, []);
   const onNodeClick = useCallback<NodeMouseHandler<CloudNodeType>>(handleNodeClick, []);
@@ -379,7 +397,7 @@ function navigate(
     }
     return;
   }
-  const nextId = findNeighbor(state.graph, fromId, direction);
+  const nextId = findNeighbor(state.graph, fromId, direction, state.collapsedNodeIds);
   if (nextId !== null) {
     state.selectNode(nextId);
   }
@@ -389,28 +407,41 @@ function navigate(
 // React Flow re-measures the real height after the first render.
 const NODE_INITIAL_HEIGHT = 44;
 
-function toRFNodes(graph: Graph, selectedNodeId: NodeId | null): CloudNodeType[] {
-  return graph.nodes.map((node: MindNode): CloudNodeType => {
+export function toRFNodes(
+  graph: Graph,
+  selectedNodeId: NodeId | null,
+  hidden: ReadonlySet<NodeId>,
+): CloudNodeType[] {
+  return graph.nodes.flatMap((node: MindNode): CloudNodeType[] => {
+    if (hidden.has(node.id)) {
+      return [];
+    }
     const isRoot = node.parentId === null;
-    return {
-      id: node.id,
-      type: "cloud",
-      position: { x: node.position.x, y: node.position.y },
-      data: { text: node.text },
-      selected: node.id === selectedNodeId,
-      // Render the node visible from frame one. Without an initial size React Flow
-      // keeps a fresh node `visibility:hidden` until it measures it, and focusing a
-      // hidden <input> drops focus to <body> — swallowing the first keystrokes when
-      // the user starts typing immediately. Measured size still replaces these.
-      initialWidth: estimateNodeWidth(node.text, isRoot),
-      initialHeight: NODE_INITIAL_HEIGHT,
-    };
+    return [
+      {
+        id: node.id,
+        type: "cloud",
+        position: { x: node.position.x, y: node.position.y },
+        data: { text: node.text },
+        selected: node.id === selectedNodeId,
+        // Render the node visible from frame one. Without an initial size React Flow
+        // keeps a fresh node `visibility:hidden` until it measures it, and focusing a
+        // hidden <input> drops focus to <body> — swallowing the first keystrokes when
+        // the user starts typing immediately. Measured size still replaces these.
+        initialWidth: estimateNodeWidth(node.text, isRoot),
+        initialHeight: NODE_INITIAL_HEIGHT,
+      },
+    ];
   });
 }
 
-export function toRFEdges(graph: Graph): RFEdge[] {
+export function toRFEdges(graph: Graph, hidden: ReadonlySet<NodeId>): RFEdge[] {
   const positions = new Map(graph.nodes.map((node) => [node.id, node.position]));
   return graph.edges.flatMap((edge: MindEdge): RFEdge[] => {
+    // Drop edges into hidden descendants of a collapsed node.
+    if (hidden.has(edge.source) || hidden.has(edge.target)) {
+      return [];
+    }
     const src = positions.get(edge.source);
     const tgt = positions.get(edge.target);
     // sanitize() filters dangling edges at load, but rendering should still cope

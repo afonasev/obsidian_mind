@@ -1,5 +1,10 @@
+// The real singleton store persists collapse toggles immediately (saveCollapsedNodes
+// is not debounced), so these tests need a working IndexedDB.
+import "fake-indexeddb/auto";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { subtreeIds } from "../../domain/graph";
+import type { Graph, NodeId } from "../../domain/types";
 import { mindMapStore } from "../../store/mindmap-store";
 import type { CloudNodeType } from "../CloudNode/CloudNode";
 import {
@@ -14,7 +19,22 @@ import {
   handlePaneClick,
   handlePaneDoubleClick,
   toRFEdges,
+  toRFNodes,
 } from "./Canvas";
+
+// Hidden-id set the way Canvas computes it: each collapsed node's subtree minus
+// the node itself. Keeps the pure-function tests aligned with the component.
+function hiddenFor(graph: Graph, collapsed: readonly NodeId[]): Set<NodeId> {
+  const hidden = new Set<NodeId>();
+  for (const id of collapsed) {
+    for (const descendant of subtreeIds(graph, id)) {
+      if (descendant !== id) {
+        hidden.add(descendant);
+      }
+    }
+  }
+  return hidden;
+}
 
 function resetStore(): void {
   act(() => {
@@ -142,6 +162,21 @@ describe("Canvas (rendered)", () => {
   it("hides the create-workspace hint when a workspace is active", () => {
     render(<Canvas />);
     expect(screen.queryByText("Создайте пространство, чтобы начать работу")).toBeNull();
+  });
+
+  it("drops descendants of a collapsed node from the rendered canvas", () => {
+    let rootId = "";
+    let childId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      childId = mindMapStore.getState().addChild({ parentId: rootId, position: { x: 100, y: 0 } });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().toggleCollapse(rootId);
+    });
+    render(<Canvas />);
+    // The collapsed root stays; its child is hidden by the canvas's `hidden` memo.
+    expect(screen.getByTestId(`cloud-node-${rootId}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`cloud-node-${childId}`)).toBeNull();
   });
 
   it("ignores double-clicks that originate inside a non-pane element", () => {
@@ -938,15 +973,55 @@ describe("handleNodeDrag / handleNodeDragStop", () => {
   });
 });
 
+describe("toRFNodes", () => {
+  const graph: Graph = {
+    nodes: [
+      { id: "r", text: "R", position: { x: 0, y: 0 }, parentId: null },
+      { id: "c", text: "C", position: { x: 100, y: 0 }, parentId: "r" },
+      { id: "g", text: "G", position: { x: 200, y: 0 }, parentId: "c" },
+    ],
+    edges: [
+      { id: "e1", source: "r", target: "c" },
+      { id: "e2", source: "c", target: "g" },
+    ],
+  };
+
+  it("renders every node when nothing is collapsed", () => {
+    const ids = toRFNodes(graph, null, new Set()).map((n) => n.id);
+    expect(ids).toEqual(["r", "c", "g"]);
+  });
+
+  it("keeps a collapsed node visible but hides its descendants", () => {
+    const ids = toRFNodes(graph, null, hiddenFor(graph, ["c"])).map((n) => n.id);
+    // "c" is collapsed: it stays, its descendant "g" is dropped.
+    expect(ids).toEqual(["r", "c"]);
+  });
+
+  it("restores descendants once the node is expanded again", () => {
+    const ids = toRFNodes(graph, null, hiddenFor(graph, [])).map((n) => n.id);
+    expect(ids).toEqual(["r", "c", "g"]);
+  });
+
+  it("marks the selected node and carries layout-derived sizing", () => {
+    const nodes = toRFNodes(graph, "c", new Set());
+    const child = nodes.find((n) => n.id === "c");
+    expect(child?.selected).toBe(true);
+    expect(child?.initialHeight).toBe(44);
+  });
+});
+
 describe("toRFEdges", () => {
   it("routes through the right-source / left-target handles when the child is to the right of the parent", () => {
-    const edges = toRFEdges({
-      nodes: [
-        { id: "p", text: "", position: { x: 0, y: 0 }, parentId: null },
-        { id: "c", text: "", position: { x: 100, y: 0 }, parentId: "p" },
-      ],
-      edges: [{ id: "e", source: "p", target: "c" }],
-    });
+    const edges = toRFEdges(
+      {
+        nodes: [
+          { id: "p", text: "", position: { x: 0, y: 0 }, parentId: null },
+          { id: "c", text: "", position: { x: 100, y: 0 }, parentId: "p" },
+        ],
+        edges: [{ id: "e", source: "p", target: "c" }],
+      },
+      new Set(),
+    );
     expect(edges).toEqual([
       {
         id: "e",
@@ -959,13 +1034,16 @@ describe("toRFEdges", () => {
   });
 
   it("routes through the left-source / right-target handles when the child is to the left of the parent", () => {
-    const edges = toRFEdges({
-      nodes: [
-        { id: "p", text: "", position: { x: 0, y: 0 }, parentId: null },
-        { id: "c", text: "", position: { x: -100, y: 0 }, parentId: "p" },
-      ],
-      edges: [{ id: "e", source: "p", target: "c" }],
-    });
+    const edges = toRFEdges(
+      {
+        nodes: [
+          { id: "p", text: "", position: { x: 0, y: 0 }, parentId: null },
+          { id: "c", text: "", position: { x: -100, y: 0 }, parentId: "p" },
+        ],
+        edges: [{ id: "e", source: "p", target: "c" }],
+      },
+      new Set(),
+    );
     expect(edges).toEqual([
       {
         id: "e",
@@ -978,13 +1056,30 @@ describe("toRFEdges", () => {
   });
 
   it("drops edges whose endpoints are missing from the node list", () => {
-    const edges = toRFEdges({
-      nodes: [{ id: "p", text: "", position: { x: 0, y: 0 }, parentId: null }],
-      edges: [
-        { id: "dangling-target", source: "p", target: "ghost" },
-        { id: "dangling-source", source: "ghost", target: "p" },
-      ],
-    });
+    const edges = toRFEdges(
+      {
+        nodes: [{ id: "p", text: "", position: { x: 0, y: 0 }, parentId: null }],
+        edges: [
+          { id: "dangling-target", source: "p", target: "ghost" },
+          { id: "dangling-source", source: "ghost", target: "p" },
+        ],
+      },
+      new Set(),
+    );
+    expect(edges).toEqual([]);
+  });
+
+  it("drops edges into hidden descendants of a collapsed node", () => {
+    const edges = toRFEdges(
+      {
+        nodes: [
+          { id: "p", text: "", position: { x: 0, y: 0 }, parentId: null },
+          { id: "c", text: "", position: { x: 100, y: 0 }, parentId: "p" },
+        ],
+        edges: [{ id: "e", source: "p", target: "c" }],
+      },
+      new Set(["c"]),
+    );
     expect(edges).toEqual([]);
   });
 });

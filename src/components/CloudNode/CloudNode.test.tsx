@@ -1,8 +1,11 @@
+// The real singleton store persists collapse toggles immediately (saveCollapsedNodes
+// is not debounced), so these tests need a working IndexedDB.
+import "fake-indexeddb/auto";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReactFlowProvider } from "@xyflow/react";
 import type { JSX, ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LAYOUT_HSTEP, LAYOUT_VSTEP } from "../../domain/layout";
 import { mindMapStore } from "../../store/mindmap-store";
 import { CHILD_OFFSET_X, CloudNode, type CloudNodeProps } from "./CloudNode";
@@ -374,6 +377,98 @@ describe("CloudNode", () => {
     // do not auto-discard.
     expect(mindMapStore.getState().graph.nodes).toHaveLength(1);
     expect(mindMapStore.getState().graph.nodes[0]?.text).toBe("");
+  });
+
+  it("hides the collapse toggle on a node without children", () => {
+    const id = seedRoot("Лист");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Лист" })} />));
+    expect(screen.queryByTestId(`cloud-node-toggle-${id}`)).toBeNull();
+  });
+
+  it("shows the collapse toggle as an accessible button on a node with children", () => {
+    let rootId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().addChild({ parentId: rootId, position: { x: 10, y: 0 }, text: "C" });
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id: rootId, text: "R" })} />));
+    expect(screen.getByRole("button", { name: "Свернуть ветвь" })).toBeInTheDocument();
+  });
+
+  it("places the collapse toggle on the outer (left) edge for a left-side node", () => {
+    let leftChild = "";
+    act(() => {
+      const rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      // A child to the LEFT of the root inherits the left side; its own child gives
+      // it the toggle, rendered on the left variant.
+      leftChild = mindMapStore
+        .getState()
+        .addChild({ parentId: rootId, position: { x: -10, y: 0 }, text: "L" });
+      mindMapStore
+        .getState()
+        .addChild({ parentId: leftChild, position: { x: -20, y: 0 }, text: "G" });
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id: leftChild, text: "L" })} />));
+    expect(screen.getByRole("button", { name: "Свернуть ветвь" })).toBeInTheDocument();
+  });
+
+  it("toggles collapse state and flips the toggle label when clicked", async () => {
+    const user = userEvent.setup();
+    let rootId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().addChild({ parentId: rootId, position: { x: 10, y: 0 }, text: "C" });
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id: rootId, text: "R" })} />));
+
+    await user.click(screen.getByRole("button", { name: "Свернуть ветвь" }));
+
+    expect(mindMapStore.getState().collapsedNodeIds.has(rootId)).toBe(true);
+    // The label now offers the inverse action, reachable by the new accessible name.
+    expect(screen.getByRole("button", { name: "Развернуть ветвь" })).toBeInTheDocument();
+  });
+
+  it("does not let a double-click on the toggle bubble (which would open the editor)", async () => {
+    const user = userEvent.setup();
+    let rootId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().addChild({ parentId: rootId, position: { x: 10, y: 0 }, text: "C" });
+      mindMapStore.getState().stopEditing();
+    });
+    // The wrapper stands in for React Flow's node element, whose onNodeDoubleClick
+    // starts name editing — the toggle must stop the dblclick before it reaches it.
+    const onWrapperDoubleClick = vi.fn();
+    render(
+      withProvider(
+        // biome-ignore lint/a11y/noStaticElementInteractions: test stand-in for React Flow's node wrapper
+        <div onDoubleClick={onWrapperDoubleClick}>
+          <CloudNode {...makeProps({ id: rootId, text: "R" })} />
+        </div>,
+      ),
+    );
+
+    await user.dblClick(screen.getByRole("button", { name: "Свернуть ветвь" }));
+
+    expect(onWrapperDoubleClick).not.toHaveBeenCalled();
+  });
+
+  it("applies the collapsed style to a collapsed node", () => {
+    let rootId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().addChild({ parentId: rootId, position: { x: 10, y: 0 }, text: "C" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().toggleCollapse(rootId);
+    });
+    render(withProvider(<CloudNode {...makeProps({ id: rootId, text: "R" })} />));
+    expect(screen.getByTestId(`cloud-node-${rootId}`).className).toMatch(/collapsed/);
   });
 
   it("does not crash when the + button is clicked for a node that vanished from the store", async () => {

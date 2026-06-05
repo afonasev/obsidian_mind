@@ -54,6 +54,9 @@ export interface MindMapPersistence {
   loadAllRoots(): Promise<Map<string, readonly PanelRoot[]>>;
   loadCollapsedRoots(): Promise<readonly string[]>;
   saveCollapsedRoots(ids: readonly string[]): Promise<void>;
+  // Per-workspace set of collapsed node ids (view state, outside the graph/undo).
+  loadCollapsedNodes(workspaceId: string): Promise<readonly NodeId[]>;
+  saveCollapsedNodes(workspaceId: string, ids: readonly NodeId[]): Promise<void>;
 }
 
 export interface MindMapState {
@@ -89,6 +92,10 @@ export interface MindMapState {
   readonly rootsByWorkspace: ReadonlyMap<string, readonly PanelRoot[]>;
   // Ids of workspaces whose root list is collapsed in the panel (absent = expanded).
   readonly collapsedWorkspaceRoots: ReadonlySet<string>;
+  // Ids of collapsed nodes in the ACTIVE workspace (view state: outside the graph,
+  // outside undo/redo, persisted per-workspace). Inactive workspaces' sets live in
+  // `meta` until entered.
+  readonly collapsedNodeIds: ReadonlySet<NodeId>;
   // Last "reveal this node" request from the panel. `seq` is a monotone counter so a
   // repeated click on the same node still re-triggers the canvas's centering effect.
   readonly reveal: { readonly nodeId: NodeId; readonly seq: number } | null;
@@ -106,6 +113,7 @@ export interface MindMapState {
   setPanelWidth(width: number, commit: boolean): void;
   setEditorWidth(width: number, commit: boolean): void;
   toggleWorkspaceRoots(id: string): Promise<void>;
+  toggleCollapse(nodeId: NodeId): void;
   revealNode(nodeId: NodeId): void;
   focusRoot(workspaceId: string, nodeId: NodeId): Promise<void>;
   flush(): Promise<void>;
@@ -209,6 +217,43 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       pendingNodeId = null;
     }
 
+    // Layout that honours the active workspace's collapsed set, so every mutation
+    // re-flows the visible tree as if collapsed nodes were leaves. Used in place of
+    // the bare layout() everywhere in the store (design Решение 3).
+    function relayout(graph: Graph): Graph {
+      return layout(graph, get().collapsedNodeIds);
+    }
+
+    /** Persist the collapsed set for the active workspace; a no-op with none active. */
+    function persistCollapsed(ids: ReadonlySet<NodeId>): void {
+      const workspaceId = get().activeWorkspaceId;
+      if (workspaceId !== null) {
+        void persistence.saveCollapsedNodes(workspaceId, [...ids]);
+      }
+    }
+
+    /**
+     * Expand every collapsed ancestor of `nodeId` so it becomes visible (used by
+     * reveal). Re-flows and persists only when something actually changed.
+     */
+    function expandAncestors(nodeId: NodeId): void {
+      const state = get();
+      const byId = new Map(state.graph.nodes.map((node) => [node.id, node]));
+      const next = new Set(state.collapsedNodeIds);
+      let changed = false;
+      let current = byId.get(nodeId)?.parentId ?? null;
+      while (current !== null) {
+        if (next.delete(current)) {
+          changed = true;
+        }
+        current = byId.get(current)?.parentId ?? null;
+      }
+      if (changed) {
+        set({ collapsedNodeIds: next, graph: layout(state.graph, next) });
+        persistCollapsed(next);
+      }
+    }
+
     /**
      * Flush the pending graph write and stash the active workspace's history before
      * the active workspace changes. Flushing matters because the debounced save
@@ -234,11 +279,13 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
     /** Make `workspace` the active one, loading its graph and restoring its history. */
     async function enterWorkspace(workspaceId: string): Promise<void> {
       const loaded = await persistence.loadGraph(workspaceId);
+      const collapsed = await persistence.loadCollapsedNodes(workspaceId);
       const restored = histories.get(workspaceId) ?? EMPTY_HISTORY;
       clearTransient();
       set({
         graph: loaded ?? graphOps.createEmpty(),
         activeWorkspaceId: workspaceId,
+        collapsedNodeIds: new Set(collapsed),
         past: restored.past,
         future: restored.future,
         selectedNodeId: null,
@@ -342,6 +389,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       editorWidth: DEFAULT_EDITOR_WIDTH,
       rootsByWorkspace: new Map(),
       collapsedWorkspaceRoots: new Set(),
+      collapsedNodeIds: new Set(),
       reveal: null,
 
       async loadWorkspaces() {
@@ -373,6 +421,8 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           activeWorkspaceId !== null
             ? ((await persistence.loadGraph(activeWorkspaceId)) ?? graphOps.createEmpty())
             : graphOps.createEmpty();
+        const collapsedNodes =
+          activeWorkspaceId !== null ? await persistence.loadCollapsedNodes(activeWorkspaceId) : [];
         clearTransient();
         histories.clear();
         set({
@@ -384,6 +434,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           editorWidth: storedEditorWidth ?? DEFAULT_EDITOR_WIDTH,
           rootsByWorkspace,
           collapsedWorkspaceRoots: new Set(collapsedRoots),
+          collapsedNodeIds: new Set(collapsedNodes),
           reveal: null,
           graph,
           past: [],
@@ -409,6 +460,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           activeWorkspaceId: workspace.id,
           editingWorkspaceId: workspace.id,
           graph: graphOps.createEmpty(),
+          collapsedNodeIds: new Set(),
           past: [],
           future: [],
           selectedNodeId: null,
@@ -502,6 +554,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         set({
           graph: graphOps.createEmpty(),
           activeWorkspaceId: null,
+          collapsedNodeIds: new Set(),
           past: [],
           future: [],
           selectedNodeId: null,
@@ -555,7 +608,36 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         await persistence.saveCollapsedRoots([...next]);
       },
 
+      toggleCollapse(nodeId) {
+        const state = get();
+        // No-op for a node without children — there is nothing to hide.
+        if (!state.graph.nodes.some((node) => node.parentId === nodeId)) {
+          return;
+        }
+        const next = new Set(state.collapsedNodeIds);
+        const collapsing = !next.delete(nodeId);
+        if (collapsing) {
+          next.add(nodeId);
+        }
+        // Collapsing a node that hides the current selection moves the selection up
+        // to the (still visible) collapsed node, so nothing stays selected off-screen.
+        let selectedNodeId = state.selectedNodeId;
+        if (collapsing && selectedNodeId !== null) {
+          const hidden = graphOps.subtreeIds(state.graph, nodeId);
+          hidden.delete(nodeId);
+          if (hidden.has(selectedNodeId)) {
+            selectedNodeId = nodeId;
+          }
+        }
+        // Re-flow with the new set but outside undo: only positions change, and the
+        // graph-reference change still triggers the debounced graph autosave.
+        set({ collapsedNodeIds: next, graph: layout(state.graph, next), selectedNodeId });
+        persistCollapsed(next);
+      },
+
       revealNode(nodeId) {
+        // Expand any collapsed ancestor first so the reveal target is actually visible.
+        expandAncestors(nodeId);
         const seq = (get().reveal?.seq ?? 0) + 1;
         set({ reveal: { nodeId, seq } });
       },
@@ -587,7 +669,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         pendingNodeId = result.nodeId;
         coalesceKey = null;
         set({
-          graph: layout(result.graph),
+          graph: relayout(result.graph),
           selectedNodeId: result.nodeId,
           editingNodeId: result.nodeId,
         });
@@ -604,7 +686,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         pendingNodeId = result.nodeId;
         coalesceKey = null;
         set({
-          graph: layout(result.graph),
+          graph: relayout(result.graph),
           selectedNodeId: result.nodeId,
           editingNodeId: result.nodeId,
         });
@@ -616,6 +698,14 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         const position = childHintPosition(get().graph, nodeId);
         if (position === null) {
           return;
+        }
+        // Auto-expand a collapsed parent first: a child added under a still-collapsed
+        // node would be hidden the moment it is created.
+        if (get().collapsedNodeIds.has(nodeId)) {
+          const next = new Set(get().collapsedNodeIds);
+          next.delete(nodeId);
+          set({ collapsedNodeIds: next });
+          persistCollapsed(next);
         }
         get().addChild({ parentId: nodeId, position });
       },
@@ -631,10 +721,22 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           return;
         }
         const prev = state.graph;
-        const next = layout(graphOps.removeSubtree(prev, { nodeId }));
+        const next = relayout(graphOps.removeSubtree(prev, { nodeId }));
         coalesceKey = null;
+        // Drop any removed id from the collapsed set so it does not linger as garbage.
+        const removed = graphOps.subtreeIds(prev, nodeId);
+        let collapsedNodeIds = state.collapsedNodeIds;
+        if ([...removed].some((id) => collapsedNodeIds.has(id))) {
+          const pruned = new Set(collapsedNodeIds);
+          for (const id of removed) {
+            pruned.delete(id);
+          }
+          collapsedNodeIds = pruned;
+          persistCollapsed(pruned);
+        }
         set({
           graph: next,
+          collapsedNodeIds,
           selectedNodeId: keepSelection(next, state.selectedNodeId),
           editingNodeId: keepSelection(next, state.editingNodeId),
           ...historyAfterPush(prev),
@@ -671,7 +773,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         const result = graphOps.pasteSubtree(prev, clipboard, parentId, position);
         clearTransient();
         set({
-          graph: layout(result.graph),
+          graph: relayout(result.graph),
           selectedNodeId: result.rootId,
           editingNodeId: null,
           ...historyAfterPush(prev),
@@ -681,7 +783,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       updateText(nodeId, text) {
         // Layout depends on each node's text-derived width, so a text change
         // must re-flow descendants to keep them from colliding with the grown node.
-        const next = layout(graphOps.updateText(get().graph, { nodeId, text }));
+        const next = relayout(graphOps.updateText(get().graph, { nodeId, text }));
         if (nodeId === pendingNodeId) {
           // Part of the pending create transaction — no separate history entry.
           set({ graph: next });
@@ -718,7 +820,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         // with the drag's in-flight moveNode ticks into one undo step; then the
         // coalescing window closes so the next drag is recorded separately.
         const moved = graphOps.moveNode(get().graph, { nodeId, position });
-        commit(layout(moved), `move:${nodeId}`);
+        commit(relayout(moved), `move:${nodeId}`);
         coalesceKey = null;
       },
 
@@ -735,7 +837,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           // Invalid (self / descendant / already-child / unknown) — no-op, no history.
           return;
         }
-        commit(layout(reparented), `move:${nodeId}`);
+        commit(relayout(reparented), `move:${nodeId}`);
         set({ selectedNodeId: nodeId, editingNodeId: null });
         clearTransient();
       },

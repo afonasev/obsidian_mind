@@ -42,6 +42,13 @@
   filter: brightness(0.94);
 }
 
+/* A collapsed node keeps a distinct dashed border so its collapsedness reads
+   without hovering, independent of the arrow toggle. */
+.collapsed {
+  border-color: #98a2b3;
+  border-style: dashed;
+}
+
 .text {
   display: block;
   min-height: 1.4em;
@@ -99,5 +106,42 @@
 
 .node:hover .addButton,
 .selected .addButton {
+  display: flex;
+}
+
+/* Collapse toggle sits on the outer edge just above the «+» button. Hidden by
+   default and revealed on hover/selection (like «+») to avoid visual noise; a
+   collapsed branch still reads via the dashed border (.collapsed). */
+.toggleButton {
+  position: absolute;
+  top: calc(50% - 28px);
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: #ffffff;
+  color: #475467;
+  font-size: 14px;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  /* Stack above the React Flow handles, which sit at the same edges. */
+  z-index: 1;
+}
+
+.toggleButtonRight {
+  right: -14px;
+}
+
+.toggleButtonLeft {
+  left: -14px;
+}
+
+.node:hover .toggleButton,
+.selected .toggleButton {
   display: flex;
 }

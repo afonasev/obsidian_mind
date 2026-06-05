@@ -1,3 +1,4 @@
+import { subtreeIds } from "./graph";
 import type { Graph, NodeId } from "./types";
 
 export type NavigationDirection = "left" | "right" | "up" | "down";
@@ -13,16 +14,23 @@ export type NavigationDirection = "left" | "right" | "up" | "down";
  * That matches the spatial-navigation intuition: ArrowLeft jumps to the closest
  * node that lies to the left and on roughly the same row; ArrowUp jumps to the
  * closest node above and in roughly the same column.
+ *
+ * `collapsed` lists ids of collapsed nodes; descendants of any collapsed node
+ * are hidden and excluded as candidates (a collapsed node is navigationally a
+ * leaf). The collapsed node itself stays visible. An empty set reproduces the
+ * unfiltered behaviour exactly.
  */
 export function findNeighbor(
   graph: Graph,
   fromId: NodeId,
   direction: NavigationDirection,
+  collapsed: ReadonlySet<NodeId>,
 ): NodeId | null {
   const from = graph.nodes.find((node) => node.id === fromId);
   if (from === undefined) {
     return null;
   }
+  const hidden = hiddenIds(graph, collapsed);
   const horizontal = direction === "left" || direction === "right";
 
   let bestId: NodeId | null = null;
@@ -30,7 +38,7 @@ export function findNeighbor(
   let bestSecondary = Number.POSITIVE_INFINITY;
 
   for (const node of graph.nodes) {
-    if (node.id === fromId) {
+    if (node.id === fromId || hidden.has(node.id)) {
       continue;
     }
     const dx = node.position.x - from.position.x;
@@ -49,6 +57,19 @@ export function findNeighbor(
     }
   }
   return bestId;
+}
+
+/** Ids hidden by collapse: descendants of every collapsed node, sans the node itself. */
+function hiddenIds(graph: Graph, collapsed: ReadonlySet<NodeId>): Set<NodeId> {
+  const hidden = new Set<NodeId>();
+  for (const id of collapsed) {
+    for (const descendant of subtreeIds(graph, id)) {
+      if (descendant !== id) {
+        hidden.add(descendant);
+      }
+    }
+  }
+  return hidden;
 }
 
 function inDirection(direction: NavigationDirection, dx: number, dy: number): boolean {

@@ -38,6 +38,8 @@ type FakePersistence = MindMapPersistence & {
   loadAllRoots: ReturnType<typeof vi.fn>;
   loadCollapsedRoots: ReturnType<typeof vi.fn>;
   saveCollapsedRoots: ReturnType<typeof vi.fn>;
+  loadCollapsedNodes: ReturnType<typeof vi.fn>;
+  saveCollapsedNodes: ReturnType<typeof vi.fn>;
 };
 
 function makePersistence(): FakePersistence {
@@ -51,6 +53,8 @@ function makePersistence(): FakePersistence {
     editorWidth: null as number | null,
     collapsedRoots: [] as readonly string[],
   };
+  // Per-workspace collapsed node ids, keyed by workspace id.
+  const collapsedNodes = new Map<string, readonly NodeId[]>();
   return {
     loadGraph: vi.fn(async (id: string) => graphs.get(id) ?? null),
     saveGraph: vi.fn(async (id: string, graph: Graph) => {
@@ -66,6 +70,7 @@ function makePersistence(): FakePersistence {
     deleteWorkspace: vi.fn(async (id: string) => {
       workspaces.delete(id);
       graphs.delete(id);
+      collapsedNodes.delete(id);
     }),
     loadActiveWorkspaceId: vi.fn(async () => meta.activeId),
     saveActiveWorkspaceId: vi.fn(async (id: string | null) => {
@@ -100,6 +105,10 @@ function makePersistence(): FakePersistence {
     loadCollapsedRoots: vi.fn(async () => meta.collapsedRoots),
     saveCollapsedRoots: vi.fn(async (ids: readonly string[]) => {
       meta.collapsedRoots = ids;
+    }),
+    loadCollapsedNodes: vi.fn(async (id: string) => collapsedNodes.get(id) ?? []),
+    saveCollapsedNodes: vi.fn(async (id: string, ids: readonly NodeId[]) => {
+      collapsedNodes.set(id, ids);
     }),
   };
 }
@@ -1283,6 +1292,157 @@ describe("autosave", () => {
     });
     await save(graph);
     expect(persistence.saveGraph).toHaveBeenCalledWith("ws", graph);
+  });
+});
+
+describe("toggleCollapse and collapse interactions", () => {
+  function seededStore(): { store: MindMapStore; persistence: FakePersistence } {
+    const { store, persistence } = makeStore();
+    store.setState({
+      activeWorkspaceId: "ws",
+      workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+    });
+    return { store, persistence };
+  }
+
+  /** Build root → childA → grandchild and leave editing committed. */
+  function tree(store: MindMapStore): { root: NodeId; childA: NodeId; grand: NodeId } {
+    const root = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    const childA = store.getState().addChild({ parentId: root, position: { x: 100, y: 0 } });
+    const grand = store.getState().addChild({ parentId: childA, position: { x: 200, y: 0 } });
+    store.getState().stopEditing();
+    return { root, childA, grand };
+  }
+
+  it("toggles a node's collapsed state without touching undo history", () => {
+    const { store } = seededStore();
+    const { root } = tree(store);
+    const pastBefore = store.getState().past.length;
+    const futureBefore = store.getState().future.length;
+    store.getState().toggleCollapse(root);
+    expect(store.getState().collapsedNodeIds.has(root)).toBe(true);
+    expect(store.getState().past.length).toBe(pastBefore);
+    expect(store.getState().future.length).toBe(futureBefore);
+    store.getState().toggleCollapse(root);
+    expect(store.getState().collapsedNodeIds.has(root)).toBe(false);
+  });
+
+  it("is a no-op for a node without children", () => {
+    const { store } = seededStore();
+    const root = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    store.getState().stopEditing();
+    store.getState().toggleCollapse(root);
+    expect(store.getState().collapsedNodeIds.has(root)).toBe(false);
+  });
+
+  it("persists the collapsed set for the active workspace on toggle", () => {
+    const { store, persistence } = seededStore();
+    const { root } = tree(store);
+    store.getState().toggleCollapse(root);
+    expect(persistence.saveCollapsedNodes).toHaveBeenCalledWith("ws", [root]);
+  });
+
+  it("collapses without persisting when no workspace is active", () => {
+    const { store, persistence } = makeStore();
+    store.setState({
+      graph: {
+        nodes: [
+          { id: "p", text: "P", position: { x: 0, y: 0 }, parentId: null },
+          { id: "c", text: "C", position: { x: 100, y: 0 }, parentId: "p" },
+        ],
+        edges: [{ id: "e", source: "p", target: "c" }],
+      },
+    });
+    store.getState().toggleCollapse("p");
+    expect(store.getState().collapsedNodeIds.has("p")).toBe(true);
+    expect(persistence.saveCollapsedNodes).not.toHaveBeenCalled();
+  });
+
+  it("moves the selection up to the collapsed node when it hides the selection", () => {
+    const { store } = seededStore();
+    const { childA, grand } = tree(store);
+    store.getState().selectNode(grand);
+    store.getState().toggleCollapse(childA);
+    expect(store.getState().selectedNodeId).toBe(childA);
+  });
+
+  it("keeps the selection when collapsing a node that does not hide it", () => {
+    const { store } = seededStore();
+    const { root } = tree(store);
+    store.getState().selectNode(root);
+    store.getState().toggleCollapse(root);
+    expect(store.getState().selectedNodeId).toBe(root);
+  });
+
+  it("collapses with no selection without error", () => {
+    const { store } = seededStore();
+    const { root } = tree(store);
+    store.getState().selectNode(null);
+    store.getState().toggleCollapse(root);
+    expect(store.getState().collapsedNodeIds.has(root)).toBe(true);
+    expect(store.getState().selectedNodeId).toBeNull();
+  });
+
+  it("auto-expands a collapsed parent when a child is added to it", () => {
+    const { store } = seededStore();
+    const { childA } = tree(store);
+    store.getState().toggleCollapse(childA);
+    expect(store.getState().collapsedNodeIds.has(childA)).toBe(true);
+    store.getState().addChildOf(childA);
+    expect(store.getState().collapsedNodeIds.has(childA)).toBe(false);
+  });
+
+  it("expands collapsed ancestors when revealing a hidden node", () => {
+    const { store } = seededStore();
+    const { root, grand } = tree(store);
+    store.getState().toggleCollapse(root);
+    expect(store.getState().collapsedNodeIds.has(root)).toBe(true);
+    store.getState().revealNode(grand);
+    expect(store.getState().collapsedNodeIds.has(root)).toBe(false);
+  });
+
+  it("drops a removed node from the collapsed set", () => {
+    const { store } = seededStore();
+    const { childA } = tree(store);
+    store.getState().toggleCollapse(childA);
+    store.getState().removeSubtree(childA);
+    expect(store.getState().collapsedNodeIds.has(childA)).toBe(false);
+  });
+
+  it("drops a collapsed descendant when an ancestor is removed", () => {
+    const { store } = seededStore();
+    const { root, childA } = tree(store);
+    store.getState().toggleCollapse(childA);
+    store.getState().removeSubtree(root);
+    expect(store.getState().collapsedNodeIds.has(childA)).toBe(false);
+  });
+
+  it("restores the collapsed set when entering a workspace", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
+    await persistence.saveGraph("a", {
+      nodes: [
+        { id: "n", text: "N", position: { x: 0, y: 0 }, parentId: null },
+        { id: "c", text: "C", position: { x: 100, y: 0 }, parentId: "n" },
+      ],
+      edges: [{ id: "e", source: "n", target: "c" }],
+    });
+    await persistence.saveActiveWorkspaceId("a");
+    await persistence.saveCollapsedNodes("a", ["n"]);
+    await store.getState().loadWorkspaces();
+    expect([...store.getState().collapsedNodeIds]).toEqual(["n"]);
+  });
+
+  it("restores each workspace's own collapsed set when switching", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
+    await persistence.saveWorkspace({ id: "b", name: "B", createdAt: 2 });
+    await persistence.saveActiveWorkspaceId("a");
+    await persistence.saveCollapsedNodes("b", ["bn"]);
+    await store.getState().loadWorkspaces();
+    expect([...store.getState().collapsedNodeIds]).toEqual([]);
+    await store.getState().selectWorkspace("b");
+    expect([...store.getState().collapsedNodeIds]).toEqual(["bn"]);
   });
 });
 

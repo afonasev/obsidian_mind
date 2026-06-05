@@ -1,7 +1,8 @@
 import { sanitize } from "../domain/integrity";
-import type { Graph, MindEdge, MindNode } from "../domain/types";
+import type { Graph, MindEdge, MindNode, NodeId } from "../domain/types";
 import type { PanelRoot, Workspace } from "../domain/workspaces";
 import {
+  collapsedNodesKey,
   GRAPH_STORE,
   META_ACTIVE_WORKSPACE_KEY,
   META_COLLAPSED_ROOTS_KEY,
@@ -91,10 +92,11 @@ export async function saveWorkspace(workspace: Workspace): Promise<void> {
 export async function deleteWorkspace(workspaceId: string): Promise<void> {
   const db = await openMindMapDb();
   try {
-    const tx = db.transaction([WORKSPACES_STORE, GRAPH_STORE], "readwrite");
+    const tx = db.transaction([WORKSPACES_STORE, GRAPH_STORE, META_STORE], "readwrite");
     await Promise.all([
       tx.objectStore(WORKSPACES_STORE).delete(workspaceId),
       tx.objectStore(GRAPH_STORE).delete(workspaceId),
+      tx.objectStore(META_STORE).delete(collapsedNodesKey(workspaceId)),
       tx.done,
     ]);
   } finally {
@@ -213,6 +215,28 @@ export async function saveCollapsedRoots(ids: readonly string[]): Promise<void> 
   const db = await openMindMapDb();
   try {
     await db.put(META_STORE, ids, META_COLLAPSED_ROOTS_KEY);
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadCollapsedNodes(workspaceId: string): Promise<readonly NodeId[]> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, collapsedNodesKey(workspaceId));
+    return Array.isArray(value) ? (value as readonly NodeId[]) : [];
+  } finally {
+    db.close();
+  }
+}
+
+export async function saveCollapsedNodes(
+  workspaceId: string,
+  ids: readonly NodeId[],
+): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, ids, collapsedNodesKey(workspaceId));
   } finally {
     db.close();
   }

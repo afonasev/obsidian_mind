@@ -36,8 +36,13 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
   const side = useMindMapStore((state) => sideOf(state.graph, id));
   // Dim/outline this node while another node is dragged over it as a re-parent target.
   const isDropTarget = useMindMapStore((state) => state.dropTargetId === id);
+  // Primitive selectors keep zustand referential equality stable (no derived objects).
+  const hasChildren = useMindMapStore((state) => state.graph.nodes.some((n) => n.parentId === id));
+  const isCollapsed = useMindMapStore((state) => state.collapsedNodeIds.has(id));
   const showLeft = isRoot || side === "left";
   const showRight = isRoot || side === "right";
+  // A root collapses both sides with a single toggle; a non-root toggles on its outward side.
+  const toggleSide: ChildDirection = isRoot || side === "right" ? "right" : "left";
 
   return (
     <div
@@ -47,6 +52,7 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
         isSelected ? styles.selected : "",
         isEditing ? styles.editing : "",
         isDropTarget ? styles.dropTarget : "",
+        isCollapsed ? styles.collapsed : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -57,6 +63,9 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
       {isEditing ? <EditView id={id} /> : <TextView text={data.text} />}
       {showLeft ? <AddChildButton parentId={id} direction="left" /> : null}
       {showRight ? <AddChildButton parentId={id} direction="right" /> : null}
+      {hasChildren ? (
+        <CollapseToggle id={id} direction={toggleSide} isCollapsed={isCollapsed} />
+      ) : null}
       <Handle id="source-left" type="source" position={Position.Left} isConnectable={false} />
       <Handle id="source-right" type="source" position={Position.Right} isConnectable={false} />
     </div>
@@ -194,6 +203,41 @@ function AddChildButton({
       }
     >
       +
+    </button>
+  );
+}
+
+function CollapseToggle({
+  id,
+  direction,
+  isCollapsed,
+}: {
+  readonly id: string;
+  readonly direction: ChildDirection;
+  readonly isCollapsed: boolean;
+}): JSX.Element {
+  function handleClick(event: MouseEvent<HTMLButtonElement>): void {
+    // Prevent the click from bubbling to the node (and thus to React Flow's selection logic).
+    event.stopPropagation();
+    mindMapStore.getState().toggleCollapse(id);
+  }
+
+  function handleDoubleClick(event: MouseEvent<HTMLButtonElement>): void {
+    // A fast collapse→expand reads as a double-click; without this it bubbles to
+    // React Flow's onNodeDoubleClick and opens the node's name editor.
+    event.stopPropagation();
+  }
+
+  return (
+    <button
+      type="button"
+      className={`${styles.toggleButton} ${direction === "right" ? styles.toggleButtonRight : styles.toggleButtonLeft}`}
+      onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
+      data-testid={`cloud-node-toggle-${id}`}
+      aria-label={isCollapsed ? "Развернуть ветвь" : "Свернуть ветвь"}
+    >
+      {isCollapsed ? "▸" : "▾"}
     </button>
   );
 }

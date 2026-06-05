@@ -62,7 +62,7 @@ export function appendChildY(graph: Graph, parentId: NodeId): number {
  * to the root; deeper descendants inherit that side from their root-side
  * ancestor.
  */
-export function layout(graph: Graph): Graph {
+export function layout(graph: Graph, collapsed: ReadonlySet<NodeId>): Graph {
   const childrenOf = buildChildrenIndex(graph);
   const positions = new Map<NodeId, Position>();
 
@@ -71,12 +71,17 @@ export function layout(graph: Graph): Graph {
       continue;
     }
     positions.set(root.id, root.position);
+    // A collapsed root hides both sides — its children get no positions, so the
+    // canvas drops them just like any other hidden descendant.
+    if (collapsed.has(root.id)) {
+      continue;
+    }
     const rootWidth = estimateNodeWidth(root.text, true);
     const direct = childrenOf.get(root.id) ?? [];
     const right = direct.filter((child) => child.position.x >= root.position.x);
     const left = direct.filter((child) => child.position.x < root.position.x);
-    layoutSide(root.position, rootWidth, right, "right", childrenOf, positions);
-    layoutSide(root.position, rootWidth, left, "left", childrenOf, positions);
+    layoutSide(root.position, rootWidth, right, "right", childrenOf, positions, collapsed);
+    layoutSide(root.position, rootWidth, left, "left", childrenOf, positions, collapsed);
   }
 
   return {
@@ -136,6 +141,7 @@ function layoutSide(
   side: Side,
   childrenOf: Map<NodeId, MindNode[]>,
   positions: Map<NodeId, Position>,
+  collapsed: ReadonlySet<NodeId>,
 ): void {
   if (children.length === 0) {
     return;
@@ -147,7 +153,7 @@ function layoutSide(
   const items = ordered.map((child) => ({
     child,
     width: estimateNodeWidth(child.text, false),
-    rows: subtreeRows(child.id, childrenOf),
+    rows: subtreeRows(child.id, childrenOf, collapsed),
   }));
   const totalRows = items.reduce((sum, item) => sum + item.rows, 0);
   const centerOffset = (totalRows - 1) / 2;
@@ -166,16 +172,28 @@ function layoutSide(
         : parentPosition.x - LAYOUT_HGAP - item.width;
     const childPos: Position = { x: childX, y: childY };
     positions.set(item.child.id, childPos);
-    const grandchildren = childrenOf.get(item.child.id) ?? [];
-    layoutSide(childPos, item.width, grandchildren, side, childrenOf, positions);
+    // A collapsed node is a leaf for layout: skip recursing into its hidden
+    // subtree so it occupies a single row and neighbours close in around it.
+    if (!collapsed.has(item.child.id)) {
+      const grandchildren = childrenOf.get(item.child.id) ?? [];
+      layoutSide(childPos, item.width, grandchildren, side, childrenOf, positions, collapsed);
+    }
     cumulativeRows += item.rows;
   }
 }
 
-function subtreeRows(id: NodeId, childrenOf: Map<NodeId, MindNode[]>): number {
+function subtreeRows(
+  id: NodeId,
+  childrenOf: Map<NodeId, MindNode[]>,
+  collapsed: ReadonlySet<NodeId>,
+): number {
+  // A collapsed node counts as one row regardless of its hidden subtree.
+  if (collapsed.has(id)) {
+    return 1;
+  }
   const children = childrenOf.get(id) ?? [];
   if (children.length === 0) {
     return 1;
   }
-  return children.reduce((sum, child) => sum + subtreeRows(child.id, childrenOf), 0);
+  return children.reduce((sum, child) => sum + subtreeRows(child.id, childrenOf, collapsed), 0);
 }

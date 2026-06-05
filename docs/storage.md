@@ -37,7 +37,7 @@ export interface StoredGraph {
 
 - **`graph`** — одна запись `StoredGraph` на пространство под ключом `workspaceId` (раньше был фиксированный ключ `current` — один граф на приложение).
 - **`workspaces`** — запись `Workspace { id, name, createdAt }` под ключом `id`. Порядок в списке = сортировка по `createdAt` (делается в `loadWorkspaces`).
-- **`meta`** — значения под строковыми ключами-константами: `activeWorkspaceId: string | null`, `panelCollapsed: boolean`, `collapsedWorkspaceRoots: string[]` (id пространств, чьи списки корней свёрнуты в панели; отсутствие id = развёрнуто) `editorPanelCollapsed: boolean` (состояние правой панели-редактора; отсутствие ключа = развёрнута), а также `panelWidth: number` и `editorPanelWidth: number` (ширины левой и правой панелей в px; отсутствие ключа = ширина по умолчанию). Малы и пишутся немедленно (без дебаунса).
+- **`meta`** — значения под строковыми ключами-константами: `activeWorkspaceId: string | null`, `panelCollapsed: boolean`, `collapsedWorkspaceRoots: string[]` (id пространств, чьи списки корней свёрнуты в панели; отсутствие id = развёрнуто) `editorPanelCollapsed: boolean` (состояние правой панели-редактора; отсутствие ключа = развёрнута), `panelWidth: number` и `editorPanelWidth: number` (ширины левой и правой панелей в px; отсутствие ключа = ширина по умолчанию), а также per-workspace ключи `collapsedNodes:<workspaceId>: NodeId[]` — список id свёрнутых узлов пространства (состояние вида, вне графа и вне undo/redo; отсутствие записи = всё развёрнуто; запись удаляется вместе с пространством). Малы и пишутся немедленно (без дебаунса).
 
 `nodes` / `edges` типизированы как `unknown` — это сознательно: данные приходят из внешнего источника (предыдущая сессия / повреждённая запись), и любой каст в `MindNode[]` без проверки был бы враньём типизатору. Преобразование в `Graph` идёт через `repository.toGraph` + `sanitize` (см. ниже).
 
@@ -85,6 +85,7 @@ interface Graph {
 - `loadPanelCollapsed()` / `savePanelCollapsed(collapsed)` — состояние сворачивания панели в `meta` (по умолчанию `false`).
 - `loadAllRoots(): Promise<Map<workspaceId, PanelRoot[]>>` — корни (`parentId === null`) всех пространств одним проходом курсором по `graph`; рёбра не нужны, `sanitize` пропускается. Питает второй уровень панели для **неактивных** пространств (у активного корни деривятся из живого графа).
 - `loadCollapsedRoots()` / `saveCollapsedRoots(ids)` — список свёрнутых списков корней в `meta` (по умолчанию `[]`).
+- `loadCollapsedNodes(workspaceId)` / `saveCollapsedNodes(workspaceId, ids)` — список id свёрнутых узлов пространства под ключом `collapsedNodes:<workspaceId>` в `meta` (по умолчанию `[]`). Запись чистится в `deleteWorkspace` в той же транзакции, что граф и пространство.
 - `loadEditorCollapsed()` / `saveEditorCollapsed(collapsed)` — состояние сворачивания правой панели-редактора в `meta` (по умолчанию `false` = развёрнута).
 - `loadPanelWidth()` / `savePanelWidth(width)` и `loadEditorWidth()` / `saveEditorWidth(width)` — ширины левой и правой панелей в `meta` (возвращают `number | null`; `null` = ширина по умолчанию, применяется в сторе).
 

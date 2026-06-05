@@ -9,7 +9,9 @@ import {
   layout,
   sideOf,
 } from "./layout";
-import type { Graph, MindNode } from "./types";
+import type { Graph, MindNode, NodeId } from "./types";
+
+const EMPTY: ReadonlySet<NodeId> = new Set();
 
 function node(id: string, parentId: string | null, x: number, y: number, text = ""): MindNode {
   return { id, parentId, position: { x, y }, text };
@@ -25,27 +27,27 @@ function graphOf(...nodes: MindNode[]): Graph {
 describe("layout", () => {
   it("leaves a single root in place", () => {
     const g = graphOf(node("r", null, 5, 7));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     expect(out.nodes[0]?.position).toEqual({ x: 5, y: 7 });
   });
 
   it("places one right-side child to the right of the root at the root's y", () => {
     const g = graphOf(node("r", null, 100, 50), node("c", "r", 105, 99));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const c = out.nodes.find((n) => n.id === "c");
     expect(c?.position).toEqual({ x: 100 + LAYOUT_HSTEP, y: 50 });
   });
 
   it("places one left-side child to the left of the root at the root's y", () => {
     const g = graphOf(node("r", null, 100, 50), node("c", "r", 90, 99));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const c = out.nodes.find((n) => n.id === "c");
     expect(c?.position).toEqual({ x: 100 - LAYOUT_HSTEP, y: 50 });
   });
 
   it("centres two right-side children vertically around the root", () => {
     const g = graphOf(node("r", null, 0, 0), node("a", "r", 10, 99), node("b", "r", 20, 99));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const a = out.nodes.find((n) => n.id === "a");
     const b = out.nodes.find((n) => n.id === "b");
     // 2 leaves → straddle root.y by ±VSTEP/2
@@ -57,7 +59,7 @@ describe("layout", () => {
     // "a" was inserted first but dragged below "b" (larger y); after layout "b"
     // (smaller input y) must take the top slot.
     const g = graphOf(node("r", null, 0, 0), node("a", "r", 10, 50), node("b", "r", 10, -50));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const a = out.nodes.find((n) => n.id === "a");
     const b = out.nodes.find((n) => n.id === "b");
     expect(b?.position.y).toBeLessThan(a?.position.y ?? 0);
@@ -70,7 +72,7 @@ describe("layout", () => {
       node("b", "r", 10, 99),
       node("c", "r", 10, 99),
     );
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const ys = ["a", "b", "c"].map((id) => out.nodes.find((n) => n.id === id)?.position.y);
     expect(ys).toEqual([-LAYOUT_VSTEP, 0, LAYOUT_VSTEP]);
   });
@@ -89,7 +91,7 @@ describe("layout", () => {
       node("ab", "a", 20, 0),
       node("b", "r", 10, 0),
     );
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const find = (id: string): MindNode | undefined => out.nodes.find((n) => n.id === id);
     const a = find("a");
     const b = find("b");
@@ -107,7 +109,7 @@ describe("layout", () => {
 
   it("lays out left and right sides of the same root independently", () => {
     const g = graphOf(node("r", null, 50, 100), node("L", "r", 0, 0), node("R", "r", 999, 0));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const l = out.nodes.find((n) => n.id === "L");
     const r = out.nodes.find((n) => n.id === "R");
     expect(l?.position).toEqual({ x: 50 - LAYOUT_HSTEP, y: 100 });
@@ -121,7 +123,7 @@ describe("layout", () => {
       node("c1", "r1", 1, 0),
       node("c2", "r2", 501, 0),
     );
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     expect(out.nodes.find((n) => n.id === "c1")?.position).toEqual({
       x: LAYOUT_HSTEP,
       y: 0,
@@ -134,13 +136,16 @@ describe("layout", () => {
 
   it("preserves edges unchanged", () => {
     const g = graphOf(node("r", null, 0, 0), node("c", "r", 10, 0));
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     expect(out.edges).toBe(g.edges);
   });
 
   it("pushes a child further right when its parent's text (and therefore width) grows", () => {
-    const short = layout(graphOf(node("r", null, 0, 0, "x"), node("c", "r", 10, 0, "")));
-    const wide = layout(graphOf(node("r", null, 0, 0, "x".repeat(40)), node("c", "r", 10, 0, "")));
+    const short = layout(graphOf(node("r", null, 0, 0, "x"), node("c", "r", 10, 0, "")), EMPTY);
+    const wide = layout(
+      graphOf(node("r", null, 0, 0, "x".repeat(40)), node("c", "r", 10, 0, "")),
+      EMPTY,
+    );
     const shortX = short.nodes.find((n) => n.id === "c")?.position.x ?? 0;
     const wideX = wide.nodes.find((n) => n.id === "c")?.position.x ?? 0;
     expect(wideX).toBeGreaterThan(shortX);
@@ -152,7 +157,7 @@ describe("layout", () => {
       node("short", "r", -10, 0, "ab"),
       node("long", "r", -10, 0, "abcdefghijklmnop"),
     );
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     const shortNode = out.nodes.find((n) => n.id === "short");
     const longNode = out.nodes.find((n) => n.id === "long");
     // Two children → straddle root.y. The wider one sits further left by the
@@ -171,8 +176,61 @@ describe("layout", () => {
       parentId: "ghost",
     };
     const g: Graph = { nodes: [orphan], edges: [] };
-    const out = layout(g);
+    const out = layout(g, EMPTY);
     expect(out.nodes[0]?.position).toEqual({ x: 42, y: 17 });
+  });
+
+  it("treats a collapsed node as a single row so its neighbours close in without a gap", () => {
+    // "a" hides a 2-leaf subtree; collapsed it must occupy one row, so a/b
+    // straddle the root by ±VSTEP/2 exactly as two plain leaves would.
+    const g = graphOf(
+      node("r", null, 0, 0),
+      node("a", "r", 10, 0),
+      node("aa", "a", 20, 0),
+      node("ab", "a", 20, 0),
+      node("b", "r", 10, 0),
+    );
+    const out = layout(g, new Set(["a"]));
+    const a = out.nodes.find((n) => n.id === "a");
+    const b = out.nodes.find((n) => n.id === "b");
+    expect(a?.position).toEqual({ x: LAYOUT_HSTEP, y: -LAYOUT_VSTEP / 2 });
+    expect(b?.position).toEqual({ x: LAYOUT_HSTEP, y: LAYOUT_VSTEP / 2 });
+  });
+
+  it("does not recurse into the children of a collapsed node", () => {
+    const g = graphOf(node("r", null, 0, 0), node("a", "r", 10, 0), node("aa", "a", 999, 999));
+    const out = layout(g, new Set(["a"]));
+    // The hidden grandchild keeps its stale stored position — layout skips it.
+    expect(out.nodes.find((n) => n.id === "aa")?.position).toEqual({ x: 999, y: 999 });
+  });
+
+  it("hides both sides when the root itself is collapsed", () => {
+    const g = graphOf(node("r", null, 0, 0), node("L", "r", -10, 999), node("R", "r", 10, 999));
+    const out = layout(g, new Set(["r"]));
+    // Collapsed root leaves its direct children at their stale positions.
+    expect(out.nodes.find((n) => n.id === "L")?.position).toEqual({ x: -10, y: 999 });
+    expect(out.nodes.find((n) => n.id === "R")?.position).toEqual({ x: 10, y: 999 });
+  });
+
+  it("restores descendant layout once the node is expanded again", () => {
+    const g = graphOf(
+      node("r", null, 0, 0),
+      node("a", "r", 10, 0),
+      node("aa", "a", 20, 0),
+      node("ab", "a", 20, 0),
+      node("b", "r", 10, 0),
+    );
+    const collapsed = layout(g, new Set(["a"]));
+    const expanded = layout(collapsed, EMPTY);
+    // Expanding re-runs the full tidy-tree: a regains its 2-row slot, b moves down.
+    const a = expanded.nodes.find((n) => n.id === "a");
+    const b = expanded.nodes.find((n) => n.id === "b");
+    const aa = expanded.nodes.find((n) => n.id === "aa");
+    const ab = expanded.nodes.find((n) => n.id === "ab");
+    expect(a?.position).toEqual({ x: LAYOUT_HSTEP, y: -LAYOUT_VSTEP / 2 });
+    expect(b?.position).toEqual({ x: LAYOUT_HSTEP, y: LAYOUT_VSTEP });
+    expect(aa?.position).toEqual({ x: 2 * LAYOUT_HSTEP, y: -LAYOUT_VSTEP });
+    expect(ab?.position).toEqual({ x: 2 * LAYOUT_HSTEP, y: 0 });
   });
 });
 
