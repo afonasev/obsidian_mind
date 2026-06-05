@@ -58,6 +58,26 @@
   --color-danger: #d9534f;
   --color-on-danger: #ffffff;
 
+  /* Заливки узлов (пресеты). Ключи идентичны PRESET_KEYS в
+     src/node-color/presets.ts. Бледные оттенки, чтобы --color-fg читался. */
+  --node-fill-red: #fde0e0;
+  --node-fill-orange: #fde4d0;
+  --node-fill-amber: #fbeec3;
+  --node-fill-yellow: #fdf7c2;
+  --node-fill-lime: #ecf6c6;
+  --node-fill-green: #d9f0d9;
+  --node-fill-teal: #d0eeea;
+  --node-fill-cyan: #d2eef3;
+  --node-fill-sky: #d8e9fb;
+  --node-fill-blue: #dbe7fb;
+  --node-fill-indigo: #e0e0fa;
+  --node-fill-violet: #e6ddf6;
+  --node-fill-purple: #ecd9f4;
+  --node-fill-magenta: #f7d6ee;
+  --node-fill-pink: #fbdded;
+  --node-fill-brown: #ecdcd0;
+  --node-fill-gray: #e6e6ec;
+
   /* Тени */
   --shadow-floating-sm: 0 1px 4px rgba(0, 0, 0, 0.15);
   --shadow-node: 0 4px 12px rgba(0, 0, 0, 0.12);
@@ -124,6 +144,26 @@
   /* Опасное действие */
   --color-danger: #e06560;
   --color-on-danger: #ffffff;
+
+  /* Заливки узлов (пресеты). Ключи идентичны PRESET_KEYS в
+     src/node-color/presets.ts. Приглушённые оттенки, чтобы --color-fg читался. */
+  --node-fill-red: #4d3236;
+  --node-fill-orange: #4d3a2c;
+  --node-fill-amber: #4a4228;
+  --node-fill-yellow: #47452a;
+  --node-fill-lime: #3e472a;
+  --node-fill-green: #2f4435;
+  --node-fill-teal: #2c4543;
+  --node-fill-cyan: #2b4348;
+  --node-fill-sky: #2d3d52;
+  --node-fill-blue: #2f3c54;
+  --node-fill-indigo: #353452;
+  --node-fill-violet: #3c3450;
+  --node-fill-purple: #44324f;
+  --node-fill-magenta: #4a3048;
+  --node-fill-pink: #4a3240;
+  --node-fill-brown: #443a32;
+  --node-fill-gray: #3a3b44;
 
   /* Тени — глубже, т.к. на тёмном фоне мягкие тени почти не читаются */
   --shadow-floating-sm: 0 1px 4px rgba(0, 0, 0, 0.5);

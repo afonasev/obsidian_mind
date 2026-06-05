@@ -88,6 +88,46 @@ describe("addChild", () => {
       addChild(createEmpty(), { parentId: "missing" as NodeId, position: { x: 0, y: 0 } }),
     ).toThrow(/Parent node not found/);
   });
+
+  it("inherits a snapshot of the parent's color", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const colored = updateNodeStyle(root.graph, {
+      nodeId: root.nodeId,
+      style: { color: "amber" },
+    });
+    const child = addChild(colored, { parentId: root.nodeId, position: { x: 1, y: 1 } });
+    const created = child.graph.nodes.find((node) => node.id === child.nodeId);
+    expect(created?.style?.color).toBe("amber");
+  });
+
+  it("copies only the color, not the rest of the parent's style", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const styled = updateNodeStyle(root.graph, {
+      nodeId: root.nodeId,
+      style: { bold: true, color: "blue" },
+    });
+    const child = addChild(styled, { parentId: root.nodeId, position: { x: 1, y: 1 } });
+    expect(child.graph.nodes.find((node) => node.id === child.nodeId)?.style).toEqual({
+      color: "blue",
+    });
+  });
+
+  it("leaves a child without color when the parent has none", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const child = addChild(root.graph, { parentId: root.nodeId, position: { x: 1, y: 1 } });
+    expect(child.graph.nodes.find((node) => node.id === child.nodeId)?.style).toBeUndefined();
+  });
+
+  it("does not re-color existing children when the parent is re-colored", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const red = updateNodeStyle(root.graph, { nodeId: root.nodeId, style: { color: "red" } });
+    const child = addChild(red, { parentId: root.nodeId, position: { x: 1, y: 1 } });
+    const recolored = updateNodeStyle(child.graph, {
+      nodeId: root.nodeId,
+      style: { color: "green" },
+    });
+    expect(recolored.nodes.find((node) => node.id === child.nodeId)?.style?.color).toBe("red");
+  });
 });
 
 describe("removeSubtree", () => {
@@ -278,6 +318,22 @@ describe("updateNodeStyle", () => {
     });
     expect(after.nodes).toEqual(root.graph.nodes);
     expect(after.edges).toEqual(root.graph.edges);
+  });
+
+  it("clears a key listed in `clear`, dropping it from the style", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const colored = updateNodeStyle(root.graph, {
+      nodeId: root.nodeId,
+      style: { bold: true, color: "teal" },
+    });
+    const reset = updateNodeStyle(colored, {
+      nodeId: root.nodeId,
+      style: {},
+      clear: ["color"],
+    });
+    const style = reset.nodes.find((node) => node.id === root.nodeId)?.style;
+    expect(style).toEqual({ bold: true });
+    expect(style?.color).toBeUndefined();
   });
 });
 

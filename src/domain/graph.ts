@@ -41,7 +41,8 @@ interface AddChildResult {
 }
 
 export function addChild(graph: Graph, input: AddChildInput): AddChildResult {
-  if (!graph.nodes.some((node) => node.id === input.parentId)) {
+  const parent = graph.nodes.find((node) => node.id === input.parentId);
+  if (parent === undefined) {
     throw new Error(`Parent node not found: ${input.parentId}`);
   }
   const node: MindNode = {
@@ -49,6 +50,11 @@ export function addChild(graph: Graph, input: AddChildInput): AddChildResult {
     text: input.text ?? "",
     position: input.position,
     parentId: input.parentId,
+    // Inherit a snapshot of the parent's fill colour (only `color`, not the whole
+    // style — bold/italic are not copied). Copied by value, so later re-colouring
+    // the parent never touches this already-created child. Absent when the parent
+    // has no colour, so the child stays on the default surface.
+    ...(parent.style?.color !== undefined ? { style: { color: parent.style.color } } : {}),
   };
   const edge: MindEdge = {
     id: crypto.randomUUID(),
@@ -114,12 +120,18 @@ interface UpdateNodeStyleInput {
   readonly nodeId: NodeId;
   // A partial patch merged onto the node's current style; absent keys are kept.
   readonly style: NodeNameStyle;
+  // Keys to remove from the style outright. A merge patch cannot express "delete
+  // color": under exactOptionalPropertyTypes a patch with `color: undefined` is
+  // not even constructible as NodeNameStyle, and spreading an absent key keeps the
+  // old value. Resetting a node to the default surface needs the key actually gone.
+  readonly clear?: readonly (keyof NodeNameStyle)[];
 }
 
 /**
  * Merge a style patch onto one node's name style. `fontScale` is clamped to the
  * [FONT_SCALE_MIN, FONT_SCALE_MAX] range here so the range invariant lives in one
- * place. No layout concern in the domain — the store re-flows after the mutation.
+ * place. Keys listed in `clear` are removed after the merge (e.g. colour reset).
+ * No layout concern in the domain — the store re-flows after the mutation.
  */
 export function updateNodeStyle(graph: Graph, input: UpdateNodeStyleInput): Graph {
   return {
@@ -128,13 +140,18 @@ export function updateNodeStyle(graph: Graph, input: UpdateNodeStyleInput): Grap
         return node;
       }
       const merged: NodeNameStyle = { ...node.style, ...input.style };
-      const style =
+      const clamped =
         merged.fontScale === undefined
           ? merged
           : {
               ...merged,
               fontScale: Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, merged.fontScale)),
             };
+      // Mutable copy so `clear` keys can be deleted (NodeNameStyle fields are readonly).
+      const style: { -readonly [K in keyof NodeNameStyle]?: NodeNameStyle[K] } = { ...clamped };
+      for (const key of input.clear ?? []) {
+        delete style[key];
+      }
       return { ...node, style };
     }),
     edges: graph.edges,

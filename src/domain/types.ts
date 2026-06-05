@@ -13,6 +13,12 @@ export interface NodeNameStyle {
   readonly bold?: boolean;
   readonly italic?: boolean;
   readonly fontScale?: number;
+  // Цвет заливки фона облака. Значение бывает двух видов: ключ пресета (например
+  // "amber", адаптируется к теме через токен --node-fill-<key>) либо сырой
+  // #rrggbb (одинаков в обеих темах). Различение — предикатом isPresetKey:
+  // кастом всегда начинается с "#", пресеты — нет. Absent = дефолтная
+  // поверхность (как до появления цвета), без миграции старых узлов.
+  readonly color?: string;
 }
 
 export interface MindNode {

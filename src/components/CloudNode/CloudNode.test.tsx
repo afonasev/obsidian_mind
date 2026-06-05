@@ -1,12 +1,13 @@
 // The real singleton store persists collapse toggles immediately (saveCollapsedNodes
 // is not debounced), so these tests need a working IndexedDB.
 import "fake-indexeddb/auto";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReactFlowProvider } from "@xyflow/react";
 import type { JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FONT_SCALE_MAX, FONT_SCALE_MIN, LAYOUT_HSTEP, LAYOUT_VSTEP } from "../../domain/layout";
+import { readRecentColors } from "../../node-color/recent-colors";
 import { mindMapStore } from "../../store/mindmap-store";
 import { Canvas } from "../Canvas/Canvas";
 import { CHILD_OFFSET_X, CloudNode, type CloudNodeProps } from "./CloudNode";
@@ -613,5 +614,155 @@ describe("CloudNode format toolbar", () => {
     });
     render(<Canvas />);
     expect(screen.getByRole("button", { name: "Меньше шрифт" })).toBeDisabled();
+  });
+});
+
+describe("CloudNode color picker", () => {
+  beforeEach(() => {
+    // The MRU lives in localStorage; clear it so recent-colour assertions are
+    // deterministic per test. Reset the theme attribute too (see the theme test).
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  function colorOf(id: string): string | undefined {
+    return mindMapStore.getState().graph.nodes.find((n) => n.id === id)?.style?.color;
+  }
+
+  it("shows a colour swatch that opens the popover without leaving edit mode", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея"); // addRoot leaves the node editing
+    render(<Canvas />);
+    const swatch = screen.getByRole("button", { name: "Цвет узла" });
+    expect(screen.queryByTestId("color-popover")).toBeNull();
+
+    await user.click(swatch);
+
+    expect(screen.getByTestId("color-popover")).toBeInTheDocument();
+    // onMouseDown+preventDefault keeps focus on the textarea, so editing continues.
+    expect(mindMapStore.getState().editingNodeId).toBe(id);
+  });
+
+  it("paints the fill with a preset and records it in recent colours", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    await user.click(screen.getByRole("button", { name: "Цвет blue" }));
+
+    expect(colorOf(id)).toBe("blue");
+    expect(readRecentColors()[0]).toBe("blue");
+    // Selecting a colour closes the popover but stays in edit mode.
+    expect(screen.queryByTestId("color-popover")).toBeNull();
+    expect(mindMapStore.getState().editingNodeId).toBe(id);
+  });
+
+  it("paints a custom #rrggbb chosen via the native colour input", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    const colorInput = screen.getByLabelText("Свой цвет");
+    // mousedown keeps textarea focus (and off the canvas pan) while the OS picker opens.
+    fireEvent.mouseDown(colorInput);
+    expect(mindMapStore.getState().editingNodeId).toBe(id);
+    // The OS picker is native; emulate a confirmed choice via a change event.
+    fireEvent.change(colorInput, { target: { value: "#ff0000" } });
+
+    expect(colorOf(id)).toBe("#ff0000");
+    expect(readRecentColors()[0]).toBe("#ff0000");
+    // A custom colour renders literally — not as a theme token.
+    const node = screen.getByTestId(`cloud-node-${id}`);
+    expect(node.getAttribute("style") ?? "").not.toContain("--node-fill-");
+  });
+
+  it("resets the colour back to the default surface", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    act(() => {
+      // Commit the fresh node and re-enter editing so reset acts on a settled
+      // (non-pending) node — its own undo step, not part of the create transaction.
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().setNodeStyle(id, { color: "blue" });
+      mindMapStore.getState().startEditing(id);
+    });
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    await user.click(screen.getByRole("button", { name: "Сбросить цвет" }));
+
+    expect(colorOf(id)).toBeUndefined();
+    expect(screen.queryByTestId("color-popover")).toBeNull();
+  });
+
+  it("resets the inherited colour of a still-pending fresh node", async () => {
+    const user = userEvent.setup();
+    const parentId = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().setNodeStyle(parentId, { color: "blue" });
+      // The new child inherits blue and stays a pending, editing node — reset on it
+      // is part of its create transaction, not a separate undo step.
+      mindMapStore.getState().addChildOf(parentId);
+    });
+    const childId = mindMapStore.getState().editingNodeId ?? "";
+    expect(colorOf(childId)).toBe("blue");
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    await user.click(screen.getByRole("button", { name: "Сбросить цвет" }));
+
+    expect(colorOf(childId)).toBeUndefined();
+  });
+
+  it("offers a previously used colour and reapplies it", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    await user.click(screen.getByRole("button", { name: "Цвет green" }));
+    // Reopen — green now appears in the recent row.
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    await user.click(screen.getByRole("button", { name: "Недавний цвет green" }));
+
+    expect(colorOf(id)).toBe("green");
+  });
+
+  it("marks the node's current preset as pressed in the popover", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().setNodeStyle(id, { color: "amber" });
+    });
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+
+    expect(screen.getByRole("button", { name: "Цвет amber" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("renders a preset as a theme-aware token whose data survives a theme switch", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Цвет узла" }));
+    await user.click(screen.getByRole("button", { name: "Цвет teal" }));
+
+    const node = screen.getByTestId(`cloud-node-${id}`);
+    // A preset stays a token reference — the same string in both themes, so CSS
+    // repaints it on theme switch without touching the node's stored colour.
+    expect(node.getAttribute("style") ?? "").toContain("--node-fill-teal");
+    act(() => {
+      document.documentElement.dataset.theme = "dark";
+    });
+    expect(colorOf(id)).toBe("teal");
+    expect(node.getAttribute("style") ?? "").toContain("--node-fill-teal");
   });
 });

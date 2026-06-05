@@ -131,6 +131,7 @@ export interface MindMapState {
   updateText(nodeId: NodeId, text: string): void;
   updateBody(nodeId: NodeId, body: string): void;
   setNodeStyle(nodeId: NodeId, patch: NodeNameStyle): void;
+  resetNodeColor(nodeId: NodeId): void;
   moveNode(nodeId: NodeId, position: Position): void;
   dropNode(nodeId: NodeId, position: Position): void;
   reparent(nodeId: NodeId, newParentId: NodeId): void;
@@ -813,6 +814,21 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         commit(next, `style:${nodeId}`);
         // Each style change is its own undo step: clicks are discrete and rare, so
         // close the coalescing window (a following click must not merge into this).
+        coalesceKey = null;
+      },
+
+      resetNodeColor(nodeId) {
+        // Reset drops the `color` key entirely (back to the default surface). A
+        // merge patch cannot express deletion, hence the domain `clear` list. Its
+        // own undo step, mirroring setNodeStyle (same `style:` coalesce key).
+        const next = relayout(
+          graphOps.updateNodeStyle(get().graph, { nodeId, style: {}, clear: ["color"] }),
+        );
+        if (nodeId === pendingNodeId) {
+          set({ graph: next });
+          return;
+        }
+        commit(next, `style:${nodeId}`);
         coalesceKey = null;
       },
 

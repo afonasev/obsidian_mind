@@ -7,6 +7,7 @@ import {
   type MouseEvent,
   useEffect,
   useRef,
+  useState,
 } from "react";
 import {
   FONT_SCALE_BASE,
@@ -17,8 +18,23 @@ import {
   sideOf,
 } from "../../domain/layout";
 import type { MindNode, NodeNameStyle } from "../../domain/types";
+import { isPresetKey, PRESET_KEYS } from "../../node-color/presets";
+import { useRecentColors } from "../../node-color/useRecentColors";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
 import styles from "./CloudNode.module.css";
+
+/**
+ * Inline background for a node's fill colour. A preset key resolves to its
+ * theme-aware token (`--node-fill-<key>`); a raw `#rrggbb` is used literally (same
+ * in both themes). Undefined when the node has no colour, so the CSS default
+ * surface shows through. Inline because the value is dynamic per node.
+ */
+function fillStyle(color: string | undefined): CSSProperties | undefined {
+  if (color === undefined) {
+    return undefined;
+  }
+  return { background: isPresetKey(color) ? `var(--node-fill-${color})` : color };
+}
 
 export const CHILD_OFFSET_X = LAYOUT_HSTEP;
 
@@ -61,6 +77,11 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
   const fontScale = useMindMapStore(
     (state) => state.graph.nodes.find((n) => n.id === id)?.style?.fontScale ?? FONT_SCALE_BASE,
   );
+  // Fill colour — a primitive selector (string | undefined) keeps zustand
+  // referential equality stable, like bold/italic/fontScale above.
+  const color = useMindMapStore(
+    (state) => state.graph.nodes.find((n) => n.id === id)?.style?.color,
+  );
   const showLeft = isRoot || side === "left";
   const showRight = isRoot || side === "right";
   // A root collapses both sides with a single toggle; a non-root toggles on its outward side.
@@ -79,6 +100,9 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
       ]
         .filter(Boolean)
         .join(" ")}
+      // User fill colour applies in both view and edit modes; absent → CSS default
+      // surface. Inline so it wins over the themed background classes.
+      style={fillStyle(color)}
       data-testid={`cloud-node-${id}`}
     >
       <Handle id="target-left" type="target" position={Position.Left} isConnectable={false} />
@@ -89,6 +113,7 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
         bold={bold}
         italic={italic}
         fontScale={fontScale}
+        color={color}
       />
       {isEditing ? (
         <EditView id={id} bold={bold} italic={italic} fontScale={fontScale} />
@@ -258,7 +283,15 @@ function FormatToolbar({
   bold,
   italic,
   fontScale,
-}: { readonly id: string; readonly isEditing: boolean } & NameStyleProps): JSX.Element {
+  color,
+}: {
+  readonly id: string;
+  readonly isEditing: boolean;
+  readonly color: string | undefined;
+} & NameStyleProps): JSX.Element {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const { recent, apply: pushRecent } = useRecentColors();
+
   // onMouseDown + preventDefault (not onClick): a plain click would move focus off
   // the textarea, firing its onBlur → commit and dropping out of name editing.
   // Preventing the default keeps focus where it is, so styling stays in edit mode.
@@ -270,6 +303,41 @@ function FormatToolbar({
       event.stopPropagation();
       mindMapStore.getState().setNodeStyle(id, patch);
     };
+  }
+
+  // Same focus-keeping guard, then: paint the node, remember the colour in the MRU,
+  // and close the popover (selection is a one-shot action).
+  function chooseColor(value: string): (event: MouseEvent<HTMLElement>) => void {
+    return (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      mindMapStore.getState().setNodeStyle(id, { color: value });
+      pushRecent(value);
+      setPickerOpen(false);
+    };
+  }
+
+  function resetColor(event: MouseEvent<HTMLButtonElement>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    mindMapStore.getState().resetNodeColor(id);
+    setPickerOpen(false);
+  }
+
+  // Native colour picker fires `change` on confirm; treat the chosen #rrggbb as a
+  // custom colour. preventDefault on the input's mousedown (above) keeps textarea
+  // focus while still letting the click open the OS picker.
+  function handleCustom(event: ChangeEvent<HTMLInputElement>): void {
+    const value = event.target.value;
+    mindMapStore.getState().setNodeStyle(id, { color: value });
+    pushRecent(value);
+    setPickerOpen(false);
+  }
+
+  function togglePicker(event: MouseEvent<HTMLButtonElement>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    setPickerOpen((open) => !open);
   }
 
   return (
@@ -317,6 +385,68 @@ function FormatToolbar({
       >
         A+
       </button>
+      <button
+        type="button"
+        className={`${styles.toolbarButton} ${styles.swatchButton}`}
+        aria-label="Цвет узла"
+        aria-haspopup="true"
+        aria-expanded={pickerOpen}
+        onMouseDown={togglePicker}
+      >
+        <span className={styles.swatchPreview} style={fillStyle(color)} />
+      </button>
+      {pickerOpen ? (
+        <div className={styles.colorPopover} data-testid="color-popover">
+          <div className={styles.presetGrid}>
+            {/* Reset is the first cell of the 6-column grid (⊘ + 5 presets in row 1,
+                then two rows of 6), so the palette reads as one aligned block. */}
+            <button
+              type="button"
+              className={`${styles.presetSwatch} ${styles.resetSwatch}`}
+              aria-label="Сбросить цвет"
+              onMouseDown={resetColor}
+            >
+              ⊘
+            </button>
+            {PRESET_KEYS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={styles.presetSwatch}
+                style={{ background: `var(--node-fill-${key})` }}
+                aria-label={`Цвет ${key}`}
+                aria-pressed={color === key}
+                onMouseDown={chooseColor(key)}
+              />
+            ))}
+          </div>
+          <div className={styles.divider} />
+          {/* Last row: up to 5 recent colours, then the native system picker as the
+              trailing cell — same column metrics as the grid above for alignment. */}
+          <div className={styles.recentRow}>
+            {recent.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={styles.presetSwatch}
+                style={fillStyle(value)}
+                aria-label={`Недавний цвет ${value}`}
+                onMouseDown={chooseColor(value)}
+              />
+            ))}
+            <input
+              type="color"
+              className={styles.colorInput}
+              aria-label="Свой цвет"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onChange={handleCustom}
+            />
+          </div>
+        </div>
+      ) : null}
     </NodeToolbar>
   );
 }

@@ -121,6 +121,97 @@
   color: var(--color-fg-accent-strong);
 }
 
+/* Colour swatch button in the toolbar: hosts a round preview of the node's fill. */
+.swatchButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.swatchPreview {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  /* A border so an empty (default-surface) swatch is still visible, and so a pale
+     preset reads as a disc rather than blending into the toolbar background. */
+  border: 1px solid var(--color-border);
+  /* Checkerboard hint for "no colour": shows through when no inline background set. */
+  background: var(--color-surface);
+}
+
+/* Floating colour picker below the toolbar. Absolutely positioned so it does not
+   widen the button row; same surface/shadow as the toolbar. */
+.colorPopover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+  z-index: 2;
+}
+
+.presetGrid {
+  display: grid;
+  grid-template-columns: repeat(6, 20px);
+  gap: 6px;
+}
+
+/* Same column metrics as .presetGrid so recent swatches and the picker line up
+   under the palette above. */
+.recentRow {
+  display: grid;
+  grid-template-columns: repeat(6, 20px);
+  gap: 6px;
+}
+
+/* Thin separator between the palette and the recent/picker row. */
+.divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+.presetSwatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--color-fg-icon);
+}
+
+.presetSwatch[aria-pressed="true"] {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Reset swatch (⊘): plain surface so it reads as "no colour" rather than a hue. */
+.resetSwatch {
+  background: var(--color-surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Native system picker, styled to match a swatch cell (trailing cell of the
+   recent row). Round like the swatches so the row reads as one block. */
+.colorInput {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
 .input {
   width: auto;
   max-width: 100%;
