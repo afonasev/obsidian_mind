@@ -18,3 +18,9 @@ if (typeof globalThis.DOMMatrixReadOnly === "undefined") {
   }
   globalThis.DOMMatrixReadOnly = DOMMatrixReadOnlyShim as unknown as typeof DOMMatrixReadOnly;
 }
+
+// jsdom does not implement matchMedia; the theme layer reads prefers-color-scheme
+// through it. Default to "no match" (light); tests that need dark stub it themselves.
+if (typeof window.matchMedia !== "function") {
+  window.matchMedia = ((query: string) => ({ matches: false, media: query })) as typeof matchMedia;
+}

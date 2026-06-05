@@ -173,6 +173,23 @@ function EditView({
     inputRef.current?.select();
   }, []);
 
+  // Grow the textarea to fit soft-wrapped lines. `rows` below counts hard newlines
+  // only, so a single long line that wraps at the node's max-width would otherwise
+  // be clipped to one row (overflow:hidden) and collapse the node to one line.
+  // Measuring scrollHeight after each change lets the node grow like the view does.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: text and fontScale are intentional re-measure triggers — they change the rendered textarea size but the body reads it from the DOM, not from them directly.
+  useEffect(() => {
+    const el = inputRef.current;
+    // The ref is always attached when this effect runs; the null guard is defensive.
+    /* v8 ignore start */
+    if (el === null) {
+      return;
+    }
+    /* v8 ignore stop */
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, fontScale]);
+
   function commit(): void {
     // A fresh node (initialRef.current === "") that the user exits without
     // typing anything should not stay around as an unnamed leaf. Same for

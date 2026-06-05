@@ -7,8 +7,8 @@
   height: 100%;
   padding: 12px;
   box-sizing: border-box;
-  background: #f7f7fb;
-  border-left: 1px solid #e2e2ea;
+  background: var(--color-bg-panel);
+  border-left: 1px solid var(--color-border-subtle);
 }
 
 .collapsed {
@@ -27,29 +27,29 @@
 .title {
   font-size: 13px;
   font-weight: 700;
-  color: #333;
+  color: var(--color-fg);
 }
 
 .toggle {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  border: 1px solid #d0d0d8;
-  background: #ffffff;
-  color: #444;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-fg-secondary);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
 }
 
 .toggle:hover {
-  background: #eeeef4;
+  background: var(--color-surface-hover);
 }
 
 .empty {
   margin: 0;
   padding: 8px 4px;
-  color: #888;
+  color: var(--color-fg-faint);
   font-size: 13px;
 }
 
@@ -66,7 +66,7 @@
   padding: 2px 4px;
   border: 0;
   background: transparent;
-  color: #6a6a85;
+  color: var(--color-fg-parent);
   font-size: 12px;
   cursor: pointer;
   border-radius: 4px;
@@ -77,22 +77,25 @@
 }
 
 .parent:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: #3a3a55;
+  background: var(--color-overlay-weak);
+  color: var(--color-fg-parent-hover);
 }
 
 .titleInput {
   padding: 8px 10px;
-  border: 1px solid #d0d0d8;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   font-size: 16px;
   font-weight: 600;
-  color: #222;
+  /* Without an explicit background the input falls back to the browser's white
+     field colour — unreadable in dark theme. */
+  background: var(--color-surface);
+  color: var(--color-fg-strong);
   outline: none;
 }
 
 .titleInput:focus {
-  border-color: #8a9bff;
+  border-color: var(--color-accent-soft-border);
 }
 
 .bodyView {
@@ -101,8 +104,8 @@
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #ffffff;
-  color: #222;
+  background: var(--color-surface);
+  color: var(--color-fg-strong);
   font-size: 14px;
   line-height: 1.5;
   cursor: text;
@@ -111,7 +114,7 @@
 }
 
 .bodyView:hover {
-  border-color: #e2e2ea;
+  border-color: var(--color-border-subtle);
 }
 
 /* Tame the default heading/list margins of the rendered markdown so the body
@@ -128,29 +131,32 @@
   flex: 1 1 auto;
   min-height: 120px;
   padding: 10px 12px;
-  border: 1px dashed #c4c4d0;
+  border: 1px dashed var(--color-border-dashed);
   border-radius: 8px;
-  background: #ffffff;
-  color: #999;
+  background: var(--color-surface);
+  color: var(--color-fg-faint-2);
   font-size: 14px;
   text-align: left;
   cursor: text;
 }
 
 .bodyPlaceholder:hover {
-  background: #fafaff;
+  background: var(--color-body-placeholder-hover);
 }
 
 .bodyTextarea {
   flex: 1 1 auto;
   min-height: 120px;
   padding: 10px 12px;
-  border: 1px solid #8a9bff;
+  border: 1px solid var(--color-accent-soft-border);
   border-radius: 8px;
   font-family: inherit;
   font-size: 14px;
   line-height: 1.5;
-  color: #222;
+  /* Same white-fallback fix as .titleInput — the raw-markdown editor needs a
+     themed surface, not the browser default. */
+  background: var(--color-surface);
+  color: var(--color-fg-strong);
   resize: none;
   outline: none;
 }

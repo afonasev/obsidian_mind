@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Obsidian Mind</title>
+    <!--
+      Anti-flash: set data-theme before first paint. Intentionally duplicates the
+      selection rule in src/theme/theme.ts (resolveInitialTheme) — keep the storage
+      key "obsidian-mind-theme" and the values light/dark in sync with it.
+    -->
+    <script>
+      (() => {
+        const stored = localStorage.getItem("obsidian-mind-theme");
+        const theme =
+          stored === "light" || stored === "dark"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

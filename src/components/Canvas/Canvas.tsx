@@ -1,4 +1,5 @@
 import {
+  ControlButton,
   Controls,
   type NodeChange,
   type NodeMouseHandler,
@@ -11,12 +12,18 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { type JSX, type MouseEvent, useCallback, useEffect, useMemo } from "react";
+import { type JSX, type MouseEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { subtreeIds } from "../../domain/graph";
-import { estimateNodeWidth, LAYOUT_HSTEP, LAYOUT_VSTEP } from "../../domain/layout";
+import {
+  estimateNodeHeight,
+  estimateNodeWidth,
+  LAYOUT_HSTEP,
+  LAYOUT_VSTEP,
+} from "../../domain/layout";
 import { findNeighbor, type NavigationDirection } from "../../domain/navigation";
 import type { Graph, MindEdge, MindNode, NodeId, Position } from "../../domain/types";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
+import { useTheme } from "../../theme/useTheme";
 import { CloudNode, type CloudNodeType } from "../CloudNode/CloudNode";
 import { FocusNav } from "../FocusNav/FocusNav";
 import { HotkeysHelp } from "../HotkeysHelp/HotkeysHelp";
@@ -41,6 +48,10 @@ function CanvasInner(): JSX.Element {
   const reveal = useMindMapStore((state) => state.reveal);
   const collapsedNodeIds = useMindMapStore((state) => state.collapsedNodeIds);
   const { screenToFlowPosition, fitView } = useReactFlow();
+  const { theme, toggle } = useTheme();
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const handleHelpToggle = useCallback(() => setIsHelpOpen((open) => !open), []);
+  const handleHelpClose = useCallback(() => setIsHelpOpen(false), []);
 
   // Ids hidden by collapse: every collapsed node's subtree minus the node itself
   // (the collapsed node stays visible; only its descendants hide).
@@ -123,6 +134,7 @@ function CanvasInner(): JSX.Element {
         minZoom={0.2}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        colorMode={theme}
         deleteKeyCode={null}
         zoomOnDoubleClick={false}
         // Arrow keys drive our own selection navigation, not React Flow's built-in
@@ -132,7 +144,20 @@ function CanvasInner(): JSX.Element {
         disableKeyboardA11y
         nodesFocusable={false}
       >
-        <Controls />
+        <Controls orientation="horizontal">
+          <ControlButton onClick={toggle} title="Переключить тему" aria-label="Переключить тему">
+            {theme === "dark" ? "☀️" : "🌙"}
+          </ControlButton>
+          <ControlButton
+            onClick={handleHelpToggle}
+            title="Горячие клавиши"
+            aria-label="Горячие клавиши"
+            aria-haspopup="dialog"
+            aria-expanded={isHelpOpen}
+          >
+            ?
+          </ControlButton>
+        </Controls>
       </ReactFlow>
       <FocusNav />
       {hasActiveWorkspace ? null : (
@@ -140,7 +165,7 @@ function CanvasInner(): JSX.Element {
           Создайте пространство, чтобы начать работу
         </div>
       )}
-      <HotkeysHelp />
+      <HotkeysHelp isOpen={isHelpOpen} onClose={handleHelpClose} />
     </div>
   );
 }
@@ -177,20 +202,34 @@ export function findDropTarget(
   if (dragged === undefined) {
     return null;
   }
-  const draggedWidth = estimateNodeWidth(dragged.text, dragged.parentId === null);
+  // Hit-test against each node's real footprint — width AND height scale with the
+  // name font, so a large node must use its estimated size, not a fixed row height,
+  // or its drop area would shrink to a thin strip and reject drops.
+  const draggedWidth = estimateNodeWidth(
+    dragged.text,
+    dragged.parentId === null,
+    dragged.style?.fontScale,
+  );
+  const draggedHeight = estimateNodeHeight(
+    dragged.text,
+    dragged.parentId === null,
+    dragged.style?.fontScale,
+  );
   const cx = draggedPosition.x + draggedWidth / 2;
-  const cy = draggedPosition.y + NODE_INITIAL_HEIGHT / 2;
+  const cy = draggedPosition.y + draggedHeight / 2;
   const blocked = subtreeIds(graph, draggedId);
   for (const node of graph.nodes) {
     if (blocked.has(node.id)) {
       continue;
     }
-    const width = estimateNodeWidth(node.text, node.parentId === null);
+    const isRoot = node.parentId === null;
+    const width = estimateNodeWidth(node.text, isRoot, node.style?.fontScale);
+    const height = estimateNodeHeight(node.text, isRoot, node.style?.fontScale);
     if (
       cx >= node.position.x &&
       cx <= node.position.x + width &&
       cy >= node.position.y &&
-      cy <= node.position.y + NODE_INITIAL_HEIGHT
+      cy <= node.position.y + height
     ) {
       return node.id;
     }

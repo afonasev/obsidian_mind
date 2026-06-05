@@ -1,0 +1,137 @@
+/* Слой дизайн-токенов. :root — светлая тема (текущая палитра, визуально
+   идентична прежней); [data-theme="dark"] переопределяет те же токены тёмными
+   значениями. Имена — семантические (по роли), а не по компонентам; близкие
+   хексы из 8 модулей схлопнуты в один токен. */
+
+:root {
+  /* Фоны / поверхности */
+  --color-bg-panel: #f7f7fb;
+  --color-surface: #ffffff;
+  /* Полупрозрачная подложка хинта поверх канваса — просвечивает сетку фона. */
+  --color-surface-scrim: rgba(255, 255, 255, 0.92);
+  --color-surface-hover: #eeeef4;
+  --color-surface-muted: #f3f3f7;
+  --color-surface-muted-hover: #e8e8ef;
+  --color-surface-subtle: #f0f0f6;
+  --color-node-hover: #f2f4f7;
+  --color-body-placeholder-hover: #fafaff;
+  /* Узлы с непустым телом: подложка с заметным холодным (синеватым) оттенком,
+     чтобы отличаться от обычной поверхности (белее белого не сделать). */
+  --color-surface-body: #e1e9fb;
+
+  /* Акцент и его мягкие подложки */
+  --color-accent: #4f80ff;
+  --color-accent-soft-border: #8a9bff;
+  --color-accent-bg-weak: #f6f9ff;
+  --color-accent-bg: #e7eefc;
+  --color-accent-bg-strong: #e4e9ff;
+  --color-on-accent: #ffffff;
+
+  /* Текст */
+  --color-fg-strong: #222;
+  --color-fg: #333;
+  --color-fg-secondary: #444;
+  --color-fg-muted: #555;
+  --color-fg-muted-2: #666;
+  --color-fg-faint: #888;
+  --color-fg-faint-2: #999;
+  --color-fg-icon: #475467;
+  --color-fg-disabled: #98a2b3;
+  --color-fg-parent: #6a6a85;
+  --color-fg-parent-hover: #3a3a55;
+  --color-fg-accent-strong: #1d3a8a;
+  --color-fg-accent-strong-2: #2b3a8c;
+
+  /* Границы */
+  --color-border: #d0d0d8;
+  --color-border-subtle: #e2e2ea;
+  --color-border-dashed: #c4c4d0;
+  --color-border-collapsed: #98a2b3;
+
+  /* Состояния — наложения (полупрозрачные, поверх любой подложки) */
+  --color-overlay-weak: rgba(0, 0, 0, 0.05);
+  --color-overlay: rgba(0, 0, 0, 0.08);
+  --color-resize-hover: rgba(79, 128, 255, 0.25);
+  --color-backdrop: rgba(0, 0, 0, 0.32);
+
+  /* Опасное действие */
+  --color-danger: #d9534f;
+  --color-on-danger: #ffffff;
+
+  /* Тени */
+  --shadow-floating-sm: 0 1px 4px rgba(0, 0, 0, 0.15);
+  --shadow-node: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --shadow-node-hover: 0 6px 18px rgba(0, 0, 0, 0.18);
+  --shadow-toolbar: 0 2px 8px rgba(0, 0, 0, 0.18);
+  --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.2);
+  --shadow-popover: 0 6px 20px rgba(0, 0, 0, 0.18);
+  --shadow-popover-lg: 0 8px 28px rgba(0, 0, 0, 0.22);
+  --shadow-dialog: 0 10px 32px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] {
+  /* Фоны / поверхности */
+  --color-bg-panel: #1b1c22;
+  /* Поверхность карточек/узлов — заметно светлее фона панелей, чтобы узлы
+     читались над тёмным канвасом, а не сливались с ним. */
+  --color-surface: #33353f;
+  --color-surface-scrim: rgba(51, 53, 63, 0.92);
+  --color-surface-hover: #3e404a;
+  --color-surface-muted: #2c2d36;
+  --color-surface-muted-hover: #383a45;
+  --color-surface-subtle: #2f303a;
+  --color-node-hover: #32333d;
+  --color-body-placeholder-hover: #2a2c39;
+  /* Узлы с непустым телом: подложка светлее и с холодным (синеватым) оттенком,
+     чтобы заметно отличаться от обычной поверхности. */
+  --color-surface-body: #3c435c;
+
+  /* Акцент и его мягкие подложки */
+  --color-accent: #6a93ff;
+  --color-accent-soft-border: #5a6fcc;
+  --color-accent-bg-weak: #232838;
+  --color-accent-bg: #2a3350;
+  --color-accent-bg-strong: #303a5e;
+  --color-on-accent: #ffffff;
+
+  /* Текст */
+  --color-fg-strong: #f0f0f4;
+  --color-fg: #dcdce4;
+  --color-fg-secondary: #c8c8d2;
+  --color-fg-muted: #a8a8b4;
+  --color-fg-muted-2: #9a9aa6;
+  --color-fg-faint: #84848f;
+  --color-fg-faint-2: #76767f;
+  --color-fg-icon: #b0b6c2;
+  --color-fg-disabled: #707682;
+  --color-fg-parent: #9a9ab0;
+  --color-fg-parent-hover: #c0c0d6;
+  --color-fg-accent-strong: #aac2ff;
+  --color-fg-accent-strong-2: #aac2ff;
+
+  /* Границы */
+  --color-border: #3c3d47;
+  --color-border-subtle: #34353e;
+  --color-border-dashed: #45464f;
+  --color-border-collapsed: #5a5c66;
+
+  /* Состояния — наложения */
+  --color-overlay-weak: rgba(255, 255, 255, 0.06);
+  --color-overlay: rgba(255, 255, 255, 0.1);
+  --color-resize-hover: rgba(106, 147, 255, 0.35);
+  --color-backdrop: rgba(0, 0, 0, 0.55);
+
+  /* Опасное действие */
+  --color-danger: #e06560;
+  --color-on-danger: #ffffff;
+
+  /* Тени — глубже, т.к. на тёмном фоне мягкие тени почти не читаются */
+  --shadow-floating-sm: 0 1px 4px rgba(0, 0, 0, 0.5);
+  --shadow-node: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-node-hover: 0 6px 18px rgba(0, 0, 0, 0.6);
+  --shadow-toolbar: 0 2px 8px rgba(0, 0, 0, 0.55);
+  --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.6);
+  --shadow-popover: 0 6px 20px rgba(0, 0, 0, 0.6);
+  --shadow-popover-lg: 0 8px 28px rgba(0, 0, 0, 0.65);
+  --shadow-dialog: 0 10px 32px rgba(0, 0, 0, 0.7);
+}

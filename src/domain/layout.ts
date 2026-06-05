@@ -30,6 +30,17 @@ const NON_ROOT_CHAR_WIDTH = 8;
 const ROOT_CHAR_WIDTH = 13;
 const NODE_HORIZONTAL_PADDING = 36; // CSS .node has 18px padding on each side
 const NODE_BORDER = 4; // 2px border on each side
+const NODE_VERTICAL_PADDING = 24; // CSS .node has 12px padding top and bottom
+const NODE_LINE_HEIGHT = 1.4; // CSS .node line-height
+const NON_ROOT_FONT_PX = 14; // CSS .node font-size
+const ROOT_FONT_PX = 21; // CSS .root font-size
+// Text wraps within the node's content box (max-width minus padding/border).
+const NODE_CONTENT_MAX_WIDTH = LAYOUT_MAX_WIDTH - NODE_HORIZONTAL_PADDING - NODE_BORDER;
+// Safety margin on the height estimate. The per-char width is approximate and real
+// fonts wrap a touch more than predicted, so we over-reserve a little to keep tall
+// nodes from overlapping neighbours. Tuned to still leave a single-line node at one
+// LAYOUT_VSTEP row (≈74px < 80 even for a root), so normal layouts are unchanged.
+const HEIGHT_SAFETY = 1.3;
 
 /**
  * Approximate rendered width of a node, clamped to the same min/max-width that
@@ -48,6 +59,28 @@ export function estimateNodeWidth(
   const longestLine = text.split("\n").reduce((max, line) => Math.max(max, line.length), 0);
   const raw = longestLine * charWidth + NODE_HORIZONTAL_PADDING + NODE_BORDER;
   return Math.min(LAYOUT_MAX_WIDTH, Math.max(LAYOUT_MIN_WIDTH, raw));
+}
+
+/**
+ * Approximate rendered height of a node. Counts visual lines (hard newlines plus
+ * soft wraps at the node's content max-width) and multiplies by the line height,
+ * which scales with the name font. Used by the layout so tall nodes (large font
+ * or many lines) reserve enough vertical room and neighbours do not overlap.
+ */
+export function estimateNodeHeight(
+  text: string,
+  isRoot: boolean,
+  fontScale: number = FONT_SCALE_BASE,
+): number {
+  const factor = fontScaleFactor(fontScale);
+  const charWidth = (isRoot ? ROOT_CHAR_WIDTH : NON_ROOT_CHAR_WIDTH) * factor;
+  const lineHeight = (isRoot ? ROOT_FONT_PX : NON_ROOT_FONT_PX) * factor * NODE_LINE_HEIGHT;
+  const lines = text === "" ? [""] : text.split("\n");
+  const visualLines = lines.reduce(
+    (sum, line) => sum + Math.max(1, Math.ceil((line.length * charWidth) / NODE_CONTENT_MAX_WIDTH)),
+    0,
+  );
+  return (visualLines * lineHeight + NODE_VERTICAL_PADDING + NODE_BORDER) * HEIGHT_SAFETY;
 }
 
 export type Side = "left" | "right";
@@ -173,7 +206,7 @@ function layoutSide(
   const items = ordered.map((child) => ({
     child,
     width: estimateNodeWidth(child.text, false, child.style?.fontScale),
-    rows: subtreeRows(child.id, childrenOf, collapsed),
+    rows: subtreeRows(child, childrenOf, collapsed),
   }));
   const totalRows = items.reduce((sum, item) => sum + item.rows, 0);
   const centerOffset = (totalRows - 1) / 2;
@@ -202,18 +235,31 @@ function layoutSide(
   }
 }
 
+// Vertical space a node reserves for itself, in VSTEP units. A node taller than
+// one VSTEP (large font or many lines) claims extra rows so neighbours keep clear.
+function ownRows(node: MindNode): number {
+  const height = estimateNodeHeight(node.text, node.parentId === null, node.style?.fontScale);
+  return Math.max(1, Math.ceil(height / LAYOUT_VSTEP));
+}
+
 function subtreeRows(
-  id: NodeId,
+  node: MindNode,
   childrenOf: Map<NodeId, MindNode[]>,
   collapsed: ReadonlySet<NodeId>,
 ): number {
-  // A collapsed node counts as one row regardless of its hidden subtree.
-  if (collapsed.has(id)) {
-    return 1;
+  const own = ownRows(node);
+  // A collapsed node counts as a leaf — its own height — regardless of the hidden subtree.
+  if (collapsed.has(node.id)) {
+    return own;
   }
-  const children = childrenOf.get(id) ?? [];
+  const children = childrenOf.get(node.id) ?? [];
   if (children.length === 0) {
-    return 1;
+    return own;
   }
-  return children.reduce((sum, child) => sum + subtreeRows(child.id, childrenOf, collapsed), 0);
+  // A subtree needs room for the taller of: its descendants' rows, or the node itself.
+  const childrenRows = children.reduce(
+    (sum, child) => sum + subtreeRows(child, childrenOf, collapsed),
+    0,
+  );
+  return Math.max(own, childrenRows);
 }

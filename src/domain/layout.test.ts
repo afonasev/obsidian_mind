@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   appendChildY,
+  estimateNodeHeight,
   estimateNodeWidth,
+  FONT_SCALE_MAX,
   LAYOUT_HSTEP,
   LAYOUT_MAX_WIDTH,
   LAYOUT_MIN_WIDTH,
@@ -75,6 +77,25 @@ describe("layout", () => {
     const out = layout(g, EMPTY);
     const ys = ["a", "b", "c"].map((id) => out.nodes.find((n) => n.id === id)?.position.y);
     expect(ys).toEqual([-LAYOUT_VSTEP, 0, LAYOUT_VSTEP]);
+  });
+
+  it("reserves extra vertical rows for a tall (large-font) sibling so neighbours don't overlap", () => {
+    // A node with the largest font scale is taller than one VSTEP, so it claims two
+    // rows; the next sibling is pushed below by more than a single VSTEP.
+    const tall: MindNode = {
+      id: "a",
+      parentId: "r",
+      position: { x: 10, y: -50 },
+      text: "X",
+      style: { fontScale: FONT_SCALE_MAX },
+    };
+    const g = graphOf(node("r", null, 0, 0), tall, node("b", "r", 10, 50));
+    const out = layout(g, EMPTY);
+    const a = out.nodes.find((n) => n.id === "a");
+    const b = out.nodes.find((n) => n.id === "b");
+    expect(a?.position.y).toBe(-LAYOUT_VSTEP / 2);
+    expect(b?.position.y).toBe(LAYOUT_VSTEP);
+    expect((b?.position.y ?? 0) - (a?.position.y ?? 0)).toBeGreaterThan(LAYOUT_VSTEP);
   });
 
   it("expands each child's vertical slot by its leaf count so subtrees do not overlap", () => {
@@ -261,6 +282,32 @@ describe("estimateNodeWidth", () => {
     const base = estimateNodeWidth(text, false);
     expect(estimateNodeWidth(text, false, 2)).toBeGreaterThan(base);
     expect(estimateNodeWidth(text, false, -2)).toBeLessThan(base);
+  });
+});
+
+describe("estimateNodeHeight", () => {
+  it("a root is taller than a non-root with the same text (larger font)", () => {
+    expect(estimateNodeHeight("Идея", true)).toBeGreaterThan(estimateNodeHeight("Идея", false));
+  });
+
+  it("an empty node is as tall as a single-line node", () => {
+    expect(estimateNodeHeight("", false)).toBe(estimateNodeHeight("x", false));
+  });
+
+  it("more hard lines make a taller node", () => {
+    expect(estimateNodeHeight("a\nb\nc", false)).toBeGreaterThan(estimateNodeHeight("a", false));
+  });
+
+  it("a single long line that soft-wraps adds height", () => {
+    expect(estimateNodeHeight("x".repeat(200), false)).toBeGreaterThan(
+      estimateNodeHeight("x", false),
+    );
+  });
+
+  it("a larger font scale makes a taller node", () => {
+    expect(estimateNodeHeight("Идея", false, FONT_SCALE_MAX)).toBeGreaterThan(
+      estimateNodeHeight("Идея", false),
+    );
   });
 });
 

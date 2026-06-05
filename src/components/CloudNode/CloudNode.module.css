@@ -4,8 +4,9 @@
   max-width: 360px;
   padding: 12px 18px;
   border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  background: var(--color-surface);
+  color: var(--color-fg-strong);
+  box-shadow: var(--shadow-node);
   border: 2px solid transparent;
   text-align: center;
   font-size: 14px;
@@ -23,29 +24,29 @@
 }
 
 .node:hover {
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-node-hover);
 }
 
 .selected {
-  border-color: #4f80ff;
+  border-color: var(--color-accent);
 }
 
 .editing {
-  border-color: #4f80ff;
-  background: #f6f9ff;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg-weak);
 }
 
 /* Highlighted while another node is dragged over this one as a re-parent target. */
 .dropTarget {
-  border-color: #4f80ff;
-  background: #e7eefc;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
   filter: brightness(0.94);
 }
 
 /* A collapsed node keeps a distinct dashed border so its collapsedness reads
    without hovering, independent of the arrow toggle. */
 .collapsed {
-  border-color: #98a2b3;
+  border-color: var(--color-border-collapsed);
   border-style: dashed;
 }
 
@@ -53,17 +54,13 @@
    have equal specificity and `.collapsed` wins by source order, so a two-class
    selector is needed to recolor the border to the accent while keeping it dashed. */
 .collapsed.selected {
-  border-color: #4f80ff;
+  border-color: var(--color-accent);
 }
 
-/* A node with a non-empty body reads via a bluish-tinted drop shadow instead of a
-   second border. Declared after .node / .node:hover so it overrides their shadow. */
+/* A node with a non-empty body reads via a slightly lighter surface tint rather
+   than a coloured glow — keeps the normal node shadow, just shifts the fill. */
 .hasBody {
-  box-shadow: 0 4px 14px rgba(79, 128, 255, 0.75);
-}
-
-.hasBody:hover {
-  box-shadow: 0 6px 20px rgba(79, 128, 255, 0.85);
+  background: var(--color-surface-body);
 }
 
 .text {
@@ -72,7 +69,7 @@
 }
 
 .placeholder {
-  color: #98a2b3;
+  color: var(--color-fg-disabled);
 }
 
 /* Name styling applied to the whole node name in both view and edit modes. */
@@ -91,8 +88,8 @@
   gap: 4px;
   padding: 4px;
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-toolbar);
 }
 
 .toolbarButton {
@@ -102,14 +99,14 @@
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #475467;
+  color: var(--color-fg-icon);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
 }
 
 .toolbarButton:hover:not(:disabled) {
-  background: #f2f4f7;
+  background: var(--color-node-hover);
 }
 
 .toolbarButton:disabled {
@@ -119,9 +116,9 @@
 
 /* B / I reflect the node's current style: an active toggle reads as pressed. */
 .toolbarActive {
-  border-color: #4f80ff;
-  background: #e7eefc;
-  color: #1d3a8a;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-fg-accent-strong);
 }
 
 .input {
@@ -131,6 +128,9 @@
   border: none;
   outline: none;
   background: transparent;
+  /* Form controls don't inherit text colour from the node by default — make them,
+     so the editor text matches the node's themed colour instead of the UA black. */
+  color: inherit;
   /* Inherit font via longhands, not the `font` shorthand: the shorthand resets
      font-weight/font-style and would override the .bold/.italic name classes, so
      bold/italic would not show while editing. Weight/style fall through to the
@@ -159,15 +159,15 @@
   height: 24px;
   border-radius: 50%;
   border: none;
-  background: #4f80ff;
-  color: #ffffff;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
   font-size: 18px;
   line-height: 1;
   display: none;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-button);
   /* Stack above the React Flow handles, which sit at the same edges. */
   z-index: 1;
 }
@@ -196,15 +196,15 @@
   height: 24px;
   border-radius: 50%;
   border: none;
-  background: #ffffff;
-  color: #475467;
+  background: var(--color-surface);
+  color: var(--color-fg-icon);
   font-size: 14px;
   line-height: 1;
   display: none;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-button);
   /* Stack above the React Flow handles, which sit at the same edges. */
   z-index: 1;
 }

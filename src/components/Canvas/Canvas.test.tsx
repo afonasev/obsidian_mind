@@ -2,6 +2,7 @@
 // is not debounced), so these tests need a working IndexedDB.
 import "fake-indexeddb/auto";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { subtreeIds } from "../../domain/graph";
 import type { Graph, NodeId } from "../../domain/types";
@@ -196,6 +197,46 @@ describe("Canvas (rendered)", () => {
     });
 
     expect(mindMapStore.getState().graph.nodes.length).toBe(beforeCount);
+  });
+});
+
+describe("Canvas control buttons (theme / help)", () => {
+  // The theme button mutates document data-theme + localStorage; keep tests isolated.
+  beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.dataset.theme = "light";
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("toggles the theme via the Controls theme button", async () => {
+    const user = userEvent.setup();
+    render(<Canvas />);
+    await user.click(screen.getByRole("button", { name: "Переключить тему" }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
+  it("opens and closes the shortcuts dialog from the Controls help button", async () => {
+    const user = userEvent.setup();
+    render(<Canvas />);
+    const help = screen.getByRole("button", { name: "Горячие клавиши" });
+
+    await user.click(help);
+    expect(screen.getByRole("dialog", { name: "Горячие клавиши" })).toBeInTheDocument();
+
+    await user.click(help);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("closes the shortcuts dialog via the dialog's own Close button", async () => {
+    const user = userEvent.setup();
+    render(<Canvas />);
+    await user.click(screen.getByRole("button", { name: "Горячие клавиши" }));
+    await user.click(screen.getByRole("button", { name: "Закрыть" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
@@ -891,6 +932,25 @@ describe("findDropTarget", () => {
       edges: [],
     };
     expect(findDropTarget(graph, "a", { x: 9000, y: 9000 })).toBeNull();
+  });
+
+  it("hits a large-font target below its first row (footprint scales with font size)", () => {
+    const graph: Graph = {
+      nodes: [
+        { id: "a", text: "A", parentId: null, position: { x: 0, y: 0 } },
+        {
+          id: "b",
+          text: "B",
+          parentId: null,
+          position: { x: 500, y: 500 },
+          style: { fontScale: 6 },
+        },
+      ],
+      edges: [],
+    };
+    // The dragged centre lands ~100px below b's top — inside a big node, but well
+    // past the old fixed 44px strip that used to reject the drop.
+    expect(findDropTarget(graph, "a", { x: 500, y: 563 })).toBe("b");
   });
 
   it("skips the dragged node and its own subtree", () => {

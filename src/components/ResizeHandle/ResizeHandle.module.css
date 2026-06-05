@@ -17,5 +17,5 @@
 }
 
 .handle:hover {
-  background: rgba(79, 128, 255, 0.25);
+  background: var(--color-resize-hover);
 }
