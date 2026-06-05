@@ -38,6 +38,7 @@ function CanvasInner(): JSX.Element {
   const selectedNodeId = useMindMapStore((state) => state.selectedNodeId);
   // No active workspace ⇒ there is nowhere to put roots; show a hint instead.
   const hasActiveWorkspace = useMindMapStore((state) => state.activeWorkspaceId !== null);
+  const reveal = useMindMapStore((state) => state.reveal);
   const { screenToFlowPosition, fitView } = useReactFlow();
 
   const nodes = useMemo(() => toRFNodes(graph, selectedNodeId), [graph, selectedNodeId]);
@@ -76,6 +77,16 @@ function CanvasInner(): JSX.Element {
       window.removeEventListener("resize", handleResize);
     };
   }, [fitView]);
+
+  // Centre the viewport on a node when the panel requests a reveal. The effect
+  // depends on the whole `reveal` object, not just its nodeId: `seq` increments on
+  // every revealNode call, so re-revealing the same node still re-runs this.
+  useEffect(() => {
+    if (reveal === null) {
+      return;
+    }
+    void fitView({ nodes: [{ id: reveal.nodeId }], maxZoom: 1, duration: 300 });
+  }, [reveal, fitView]);
 
   return (
     <div className={styles.canvas} data-testid="canvas" data-editing={editingNodeId ?? ""}>

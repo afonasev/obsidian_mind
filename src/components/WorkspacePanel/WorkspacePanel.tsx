@@ -1,7 +1,19 @@
 import { type ChangeEvent, type JSX, type KeyboardEvent, useEffect, useRef, useState } from "react";
-import type { Workspace } from "../../domain/workspaces";
+import type { Graph } from "../../domain/types";
+import type { PanelRoot, Workspace } from "../../domain/workspaces";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
 import styles from "./WorkspacePanel.module.css";
+
+// Shown for a root whose text is empty (e.g. a freshly created, unnamed root) so
+// the list entry is not blank and clickable «into nothing».
+const ROOT_PLACEHOLDER = "Без названия";
+
+/** The graph's root nodes (parentId === null) as panel entries, in graph order. */
+function rootsFromGraph(graph: Graph): readonly PanelRoot[] {
+  return graph.nodes
+    .filter((node) => node.parentId === null)
+    .map((node) => ({ id: node.id, text: node.text }));
+}
 
 // Segment by grapheme cluster, not UTF-16 code unit, so a leading emoji (a
 // surrogate pair, possibly with ZWJ/variation selectors) is taken whole instead
@@ -19,6 +31,11 @@ export function WorkspacePanel(): JSX.Element {
   const workspaces = useMindMapStore((state) => state.workspaces);
   const activeWorkspaceId = useMindMapStore((state) => state.activeWorkspaceId);
   const editingWorkspaceId = useMindMapStore((state) => state.editingWorkspaceId);
+  // Live graph of the active workspace — its roots are derived here so panel
+  // updates immediately on create/rename/delete of a root.
+  const graph = useMindMapStore((state) => state.graph);
+  const rootsByWorkspace = useMindMapStore((state) => state.rootsByWorkspace);
+  const collapsedWorkspaceRoots = useMindMapStore((state) => state.collapsedWorkspaceRoots);
 
   // Which item's «⋮» menu is open, and which workspace is pending delete-confirm.
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -85,22 +102,32 @@ export function WorkspacePanel(): JSX.Element {
       </div>
 
       <ul className={styles.list}>
-        {workspaces.map((workspace) => (
-          <WorkspaceItem
-            key={workspace.id}
-            workspace={workspace}
-            isActive={workspace.id === activeWorkspaceId}
-            isEditing={workspace.id === editingWorkspaceId}
-            isMenuOpen={workspace.id === menuOpenId}
-            onToggleMenu={() =>
-              setMenuOpenId((current) => (current === workspace.id ? null : workspace.id))
-            }
-            onRequestDelete={() => {
-              setMenuOpenId(null);
-              setPendingDeleteId(workspace.id);
-            }}
-          />
-        ))}
+        {workspaces.map((workspace) => {
+          const isActive = workspace.id === activeWorkspaceId;
+          // Active workspace's roots come from the live graph; inactive ones are
+          // read from the cache, which stays put while they are inactive.
+          const roots = isActive
+            ? rootsFromGraph(graph)
+            : (rootsByWorkspace.get(workspace.id) ?? []);
+          return (
+            <WorkspaceItem
+              key={workspace.id}
+              workspace={workspace}
+              isActive={isActive}
+              isEditing={workspace.id === editingWorkspaceId}
+              isMenuOpen={workspace.id === menuOpenId}
+              roots={roots}
+              rootsCollapsed={collapsedWorkspaceRoots.has(workspace.id)}
+              onToggleMenu={() =>
+                setMenuOpenId((current) => (current === workspace.id ? null : workspace.id))
+              }
+              onRequestDelete={() => {
+                setMenuOpenId(null);
+                setPendingDeleteId(workspace.id);
+              }}
+            />
+          );
+        })}
       </ul>
 
       <button
@@ -132,6 +159,8 @@ interface WorkspaceItemProps {
   readonly isActive: boolean;
   readonly isEditing: boolean;
   readonly isMenuOpen: boolean;
+  readonly roots: readonly PanelRoot[];
+  readonly rootsCollapsed: boolean;
   readonly onToggleMenu: () => void;
   readonly onRequestDelete: () => void;
 }
@@ -141,6 +170,8 @@ function WorkspaceItem({
   isActive,
   isEditing,
   isMenuOpen,
+  roots,
+  rootsCollapsed,
   onToggleMenu,
   onRequestDelete,
 }: WorkspaceItemProps): JSX.Element {
@@ -153,45 +184,84 @@ function WorkspaceItem({
     mindMapStore.getState().startWorkspaceRename(workspace.id);
   }
 
+  function handleToggleRoots(): void {
+    void mindMapStore.getState().toggleWorkspaceRoots(workspace.id);
+  }
+
   return (
-    <li className={`${styles.item} ${isActive ? styles.active : ""}`}>
-      {isEditing ? (
-        <WorkspaceNameInput workspaceId={workspace.id} initialName={workspace.name} />
-      ) : (
+    <li className={styles.item}>
+      <div className={`${styles.row} ${isActive ? styles.active : ""}`}>
         <button
           type="button"
-          className={styles.select}
-          onClick={handleSelect}
-          aria-current={isActive}
+          className={styles.chevron}
+          onClick={handleToggleRoots}
+          aria-expanded={!rootsCollapsed}
+          aria-label={
+            rootsCollapsed
+              ? `Развернуть корни пространства «${workspace.name}»`
+              : `Свернуть корни пространства «${workspace.name}»`
+          }
         >
-          {workspace.name}
+          {rootsCollapsed ? "›" : "⌄"}
         </button>
-      )}
-      <button
-        type="button"
-        className={styles.menuButton}
-        onClick={onToggleMenu}
-        aria-haspopup="menu"
-        aria-expanded={isMenuOpen}
-        aria-label={`Меню пространства «${workspace.name}»`}
-      >
-        ⋮
-      </button>
-      {isMenuOpen ? (
-        <div className={styles.menu} role="menu">
-          <button type="button" className={styles.menuItem} role="menuitem" onClick={handleRename}>
-            Переименовать
-          </button>
+        {isEditing ? (
+          <WorkspaceNameInput workspaceId={workspace.id} initialName={workspace.name} />
+        ) : (
           <button
             type="button"
-            className={styles.menuItem}
-            role="menuitem"
-            onClick={onRequestDelete}
+            className={styles.select}
+            onClick={handleSelect}
+            aria-current={isActive}
           >
-            Удалить
+            {workspace.name}
           </button>
-        </div>
-      ) : null}
+        )}
+        <button
+          type="button"
+          className={styles.menuButton}
+          onClick={onToggleMenu}
+          aria-haspopup="menu"
+          aria-expanded={isMenuOpen}
+          aria-label={`Меню пространства «${workspace.name}»`}
+        >
+          ⋮
+        </button>
+        {isMenuOpen ? (
+          <div className={styles.menu} role="menu">
+            <button
+              type="button"
+              className={styles.menuItem}
+              role="menuitem"
+              onClick={handleRename}
+            >
+              Переименовать
+            </button>
+            <button
+              type="button"
+              className={styles.menuItem}
+              role="menuitem"
+              onClick={onRequestDelete}
+            >
+              Удалить
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {rootsCollapsed ? null : (
+        <ul className={styles.roots}>
+          {roots.map((root) => (
+            <li key={root.id}>
+              <button
+                type="button"
+                className={styles.root}
+                onClick={() => void mindMapStore.getState().focusRoot(workspace.id, root.id)}
+              >
+                {root.text.trim() === "" ? ROOT_PLACEHOLDER : root.text}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </li>
   );
 }

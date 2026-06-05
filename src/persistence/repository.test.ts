@@ -7,10 +7,13 @@ import { DB_NAME, GRAPH_STORE, openMindMapDb, WORKSPACES_STORE } from "./db";
 import {
   deleteWorkspace,
   loadActiveWorkspaceId,
+  loadAllRoots,
+  loadCollapsedRoots,
   loadGraph,
   loadPanelCollapsed,
   loadWorkspaces,
   saveActiveWorkspaceId,
+  saveCollapsedRoots,
   saveGraph,
   savePanelCollapsed,
   saveWorkspace,
@@ -156,6 +159,45 @@ describe("workspaces CRUD", () => {
   });
 });
 
+describe("loadAllRoots", () => {
+  it("returns an empty map when no graphs exist", async () => {
+    expect(await loadAllRoots()).toEqual(new Map());
+  });
+
+  it("maps each workspace id to its root nodes only", async () => {
+    await saveGraph("w1", sampleGraph);
+    const other: Graph = {
+      nodes: [
+        { id: "r1", text: "Первый", position: { x: 0, y: 0 }, parentId: null },
+        { id: "r2", text: "Второй", position: { x: 0, y: 0 }, parentId: null },
+        { id: "c", text: "Дитя", position: { x: 0, y: 0 }, parentId: "r1" },
+      ],
+      edges: [{ id: "e", source: "r1", target: "c" }],
+    };
+    await saveGraph("w2", other);
+
+    const map = await loadAllRoots();
+    expect(map.get("w1")).toEqual([{ id: "n1", text: "Корень" }]);
+    expect(map.get("w2")).toEqual([
+      { id: "r1", text: "Первый" },
+      { id: "r2", text: "Второй" },
+    ]);
+  });
+
+  it("yields an empty list for a workspace whose graph has no nodes", async () => {
+    await saveGraph("empty", { nodes: [], edges: [] });
+    expect((await loadAllRoots()).get("empty")).toEqual([]);
+  });
+
+  it("keeps the empty text of an unnamed root", async () => {
+    await saveGraph("w", {
+      nodes: [{ id: "r", text: "", position: { x: 0, y: 0 }, parentId: null }],
+      edges: [],
+    });
+    expect((await loadAllRoots()).get("w")).toEqual([{ id: "r", text: "" }]);
+  });
+});
+
 describe("meta", () => {
   it("returns null active workspace id by default", async () => {
     expect(await loadActiveWorkspaceId()).toBeNull();
@@ -181,6 +223,17 @@ describe("meta", () => {
     expect(await loadPanelCollapsed()).toBe(true);
     await savePanelCollapsed(false);
     expect(await loadPanelCollapsed()).toBe(false);
+  });
+
+  it("returns an empty collapsed-roots list by default", async () => {
+    expect(await loadCollapsedRoots()).toEqual([]);
+  });
+
+  it("reads back a saved collapsed-roots list", async () => {
+    await saveCollapsedRoots(["a", "b"]);
+    expect(await loadCollapsedRoots()).toEqual(["a", "b"]);
+    await saveCollapsedRoots([]);
+    expect(await loadCollapsedRoots()).toEqual([]);
   });
 });
 

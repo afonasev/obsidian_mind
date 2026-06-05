@@ -4,6 +4,12 @@ export interface Workspace {
   readonly createdAt: number;
 }
 
+/** A root node (parentId === null) as shown in the panel's second level. */
+export interface PanelRoot {
+  readonly id: string;
+  readonly text: string;
+}
+
 /** Append a new workspace to the list (order = creation order). */
 export function createWorkspace(
   list: readonly Workspace[],

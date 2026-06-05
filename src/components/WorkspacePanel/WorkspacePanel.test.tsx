@@ -27,6 +27,9 @@ function resetStore(): void {
       activeWorkspaceId: null,
       editingWorkspaceId: null,
       panelCollapsed: false,
+      rootsByWorkspace: new Map(),
+      collapsedWorkspaceRoots: new Set(),
+      reveal: null,
     });
   });
 }
@@ -286,5 +289,118 @@ describe("WorkspacePanel — select", () => {
     await waitFor(() => {
       expect(mindMapStore.getState().activeWorkspaceId).toBe("w1");
     });
+  });
+});
+
+/** A root node of the active graph (parentId === null). */
+function rootNode(id: string, text: string) {
+  return { id, text, parentId: null, position: { x: 0, y: 0 } };
+}
+
+describe("WorkspacePanel — roots", () => {
+  it("renders the active workspace's roots from the live graph", () => {
+    seedWorkspaces(["Работа"]);
+    act(() => {
+      mindMapStore.setState({
+        graph: { nodes: [rootNode("n1", "Идея"), rootNode("n2", "План")], edges: [] },
+      });
+    });
+    render(<WorkspacePanel />);
+
+    expect(screen.getByRole("button", { name: "Идея" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "План" })).toBeInTheDocument();
+  });
+
+  it("renders an inactive workspace's roots from the cache", () => {
+    seedWorkspaces(["Работа", "Учёба"]);
+    act(() => {
+      mindMapStore.setState({
+        rootsByWorkspace: new Map([["w1", [{ id: "r1", text: "Кэш-корень" }]]]),
+      });
+    });
+    render(<WorkspacePanel />);
+
+    expect(screen.getByRole("button", { name: "Кэш-корень" })).toBeInTheDocument();
+  });
+
+  it("shows the placeholder for a root with empty text", () => {
+    seedWorkspaces(["Работа"]);
+    act(() => {
+      mindMapStore.setState({
+        graph: { nodes: [rootNode("n1", "")], edges: [] },
+      });
+    });
+    render(<WorkspacePanel />);
+
+    expect(screen.getByRole("button", { name: "Без названия" })).toBeInTheDocument();
+  });
+
+  it("toggles the root list via the chevron", async () => {
+    const user = userEvent.setup();
+    seedWorkspaces(["Работа"]);
+    act(() => {
+      mindMapStore.setState({
+        graph: { nodes: [rootNode("n1", "Идея")], edges: [] },
+      });
+    });
+    render(<WorkspacePanel />);
+
+    // Default is expanded: the root is visible.
+    expect(screen.getByRole("button", { name: "Идея" })).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Свернуть корни пространства «Работа»"));
+    await waitFor(() => {
+      expect(mindMapStore.getState().collapsedWorkspaceRoots.has("w0")).toBe(true);
+    });
+    expect(screen.queryByRole("button", { name: "Идея" })).toBeNull();
+
+    await user.click(screen.getByLabelText("Развернуть корни пространства «Работа»"));
+    await waitFor(() => {
+      expect(mindMapStore.getState().collapsedWorkspaceRoots.has("w0")).toBe(false);
+    });
+    expect(screen.getByRole("button", { name: "Идея" })).toBeInTheDocument();
+  });
+
+  it("hides a collapsed workspace's root list", () => {
+    seedWorkspaces(["Работа"]);
+    act(() => {
+      mindMapStore.setState({
+        graph: { nodes: [rootNode("n1", "Идея")], edges: [] },
+        collapsedWorkspaceRoots: new Set(["w0"]),
+      });
+    });
+    render(<WorkspacePanel />);
+
+    expect(screen.queryByRole("button", { name: "Идея" })).toBeNull();
+  });
+
+  it("focuses a root on click", async () => {
+    const user = userEvent.setup();
+    seedWorkspaces(["Работа"]);
+    act(() => {
+      mindMapStore.setState({
+        graph: { nodes: [rootNode("n1", "Идея")], edges: [] },
+      });
+    });
+    render(<WorkspacePanel />);
+
+    await user.click(screen.getByRole("button", { name: "Идея" }));
+    await waitFor(() => {
+      expect(mindMapStore.getState().selectedNodeId).toBe("n1");
+    });
+    expect(mindMapStore.getState().reveal?.nodeId).toBe("n1");
+  });
+
+  it("shows no roots when the panel is collapsed", () => {
+    seedWorkspaces(["Работа"]);
+    act(() => {
+      mindMapStore.setState({
+        graph: { nodes: [rootNode("n1", "Идея")], edges: [] },
+        panelCollapsed: true,
+      });
+    });
+    render(<WorkspacePanel />);
+
+    expect(screen.queryByRole("button", { name: "Идея" })).toBeNull();
   });
 });

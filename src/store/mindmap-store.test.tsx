@@ -4,7 +4,7 @@ import type { JSX } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { sideOf } from "../domain/layout";
 import type { Graph, NodeId } from "../domain/types";
-import type { Workspace } from "../domain/workspaces";
+import type { PanelRoot, Workspace } from "../domain/workspaces";
 import type { DebouncedSaver } from "../persistence/debounced-saver";
 import {
   createMindMapStore,
@@ -26,12 +26,19 @@ type FakePersistence = MindMapPersistence & {
   saveActiveWorkspaceId: ReturnType<typeof vi.fn>;
   loadPanelCollapsed: ReturnType<typeof vi.fn>;
   savePanelCollapsed: ReturnType<typeof vi.fn>;
+  loadAllRoots: ReturnType<typeof vi.fn>;
+  loadCollapsedRoots: ReturnType<typeof vi.fn>;
+  saveCollapsedRoots: ReturnType<typeof vi.fn>;
 };
 
 function makePersistence(): FakePersistence {
   const graphs = new Map<string, Graph>();
   const workspaces = new Map<string, Workspace>();
-  const meta = { activeId: null as string | null, panel: false };
+  const meta = {
+    activeId: null as string | null,
+    panel: false,
+    collapsedRoots: [] as readonly string[],
+  };
   return {
     loadGraph: vi.fn(async (id: string) => graphs.get(id) ?? null),
     saveGraph: vi.fn(async (id: string, graph: Graph) => {
@@ -55,6 +62,20 @@ function makePersistence(): FakePersistence {
     loadPanelCollapsed: vi.fn(async () => meta.panel),
     savePanelCollapsed: vi.fn(async (collapsed: boolean) => {
       meta.panel = collapsed;
+    }),
+    loadAllRoots: vi.fn(async () => {
+      const map = new Map<string, readonly PanelRoot[]>();
+      for (const [id, graph] of graphs) {
+        map.set(
+          id,
+          graph.nodes.filter((n) => n.parentId === null).map((n) => ({ id: n.id, text: n.text })),
+        );
+      }
+      return map;
+    }),
+    loadCollapsedRoots: vi.fn(async () => meta.collapsedRoots),
+    saveCollapsedRoots: vi.fn(async (ids: readonly string[]) => {
+      meta.collapsedRoots = ids;
     }),
   };
 }
@@ -991,6 +1012,99 @@ describe("togglePanel", () => {
     expect(persistence.savePanelCollapsed).toHaveBeenCalledWith(true);
     await store.getState().togglePanel();
     expect(store.getState().panelCollapsed).toBe(false);
+  });
+});
+
+describe("panel root list", () => {
+  it("loads cached roots and collapsed flags on loadWorkspaces", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
+    await persistence.saveWorkspace({ id: "b", name: "B", createdAt: 2 });
+    await persistence.saveGraph("a", {
+      nodes: [{ id: "ra", text: "Корень A", position: { x: 0, y: 0 }, parentId: null }],
+      edges: [],
+    });
+    await persistence.saveCollapsedRoots(["b"]);
+
+    await store.getState().loadWorkspaces();
+    const s = store.getState();
+    expect(s.rootsByWorkspace.get("a")).toEqual([{ id: "ra", text: "Корень A" }]);
+    expect(s.collapsedWorkspaceRoots.has("b")).toBe(true);
+  });
+
+  it("caches the leaving workspace's roots when switching away", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    const rootId = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "Идея" });
+    store.getState().stopEditing();
+
+    await store.getState().createWorkspace();
+    // After leaving A, its single root is cached for the panel's second level.
+    expect(store.getState().rootsByWorkspace.get(a)).toEqual([{ id: rootId, text: "Идея" }]);
+  });
+
+  it("toggleWorkspaceRoots flips membership and persists the set", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().toggleWorkspaceRoots("w");
+    expect(store.getState().collapsedWorkspaceRoots.has("w")).toBe(true);
+    expect(persistence.saveCollapsedRoots).toHaveBeenLastCalledWith(["w"]);
+    await store.getState().toggleWorkspaceRoots("w");
+    expect(store.getState().collapsedWorkspaceRoots.has("w")).toBe(false);
+    expect(persistence.saveCollapsedRoots).toHaveBeenLastCalledWith([]);
+  });
+
+  it("prunes a deleted workspace from the roots cache and collapsed set", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(a, "A");
+    await store.getState().createWorkspace();
+    const b = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(b, "B");
+    await store.getState().toggleWorkspaceRoots(a);
+
+    await store.getState().deleteWorkspace(a);
+    expect(store.getState().rootsByWorkspace.has(a)).toBe(false);
+    expect(store.getState().collapsedWorkspaceRoots.has(a)).toBe(false);
+    expect(persistence.saveCollapsedRoots).toHaveBeenLastCalledWith([]);
+  });
+
+  it("revealNode bumps a monotone seq even for the same node", () => {
+    const store = activeStore();
+    store.getState().revealNode("n1");
+    expect(store.getState().reveal).toEqual({ nodeId: "n1", seq: 1 });
+    store.getState().revealNode("n1");
+    expect(store.getState().reveal).toEqual({ nodeId: "n1", seq: 2 });
+  });
+
+  it("focusRoot selects and reveals a root in the active workspace", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const ws = store.getState().activeWorkspaceId ?? "";
+    const rootId = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+    store.getState().stopEditing();
+
+    await store.getState().focusRoot(ws, rootId);
+    expect(store.getState().selectedNodeId).toBe(rootId);
+    expect(store.getState().reveal?.nodeId).toBe(rootId);
+  });
+
+  it("focusRoot switches workspace before selecting a root from another one", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    const aRoot = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "in A" });
+    store.getState().stopEditing();
+
+    await store.getState().createWorkspace();
+    const b = store.getState().activeWorkspaceId ?? "";
+    expect(store.getState().activeWorkspaceId).toBe(b);
+
+    await store.getState().focusRoot(a, aRoot);
+    expect(store.getState().activeWorkspaceId).toBe(a);
+    expect(store.getState().selectedNodeId).toBe(aRoot);
+    expect(store.getState().reveal?.nodeId).toBe(aRoot);
   });
 });
 

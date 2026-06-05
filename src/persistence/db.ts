@@ -10,6 +10,8 @@ export const META_STORE = "meta";
 // Fixed keys inside the `meta` object store.
 export const META_ACTIVE_WORKSPACE_KEY = "activeWorkspaceId";
 export const META_PANEL_COLLAPSED_KEY = "panelCollapsed";
+// Ids of workspaces whose root list is collapsed in the panel (absent = expanded).
+export const META_COLLAPSED_ROOTS_KEY = "collapsedWorkspaceRoots";
 
 export interface MindMapDb {
   graph: {

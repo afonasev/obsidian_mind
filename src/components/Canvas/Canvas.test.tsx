@@ -71,6 +71,29 @@ describe("Canvas (rendered)", () => {
     expect(screen.getByTestId("canvas")).toBeInTheDocument();
   });
 
+  it("centers the viewport on the revealed node and re-reacts to a fresh reveal request", () => {
+    let rootId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().stopEditing();
+    });
+    // Mount with reveal === null covers the no-op branch at first render.
+    render(<Canvas />);
+    const baseSeq = mindMapStore.getState().reveal?.seq ?? 0;
+
+    act(() => {
+      mindMapStore.getState().revealNode(rootId);
+    });
+    expect(mindMapStore.getState().reveal?.seq).toBe(baseSeq + 1);
+    // A repeat reveal of the same node still bumps seq, re-triggering the effect.
+    act(() => {
+      mindMapStore.getState().revealNode(rootId);
+    });
+    expect(mindMapStore.getState().reveal?.seq).toBe(baseSeq + 2);
+    // The fitView call must not tear the canvas down.
+    expect(screen.getByTestId("canvas")).toBeInTheDocument();
+  });
+
   it("removes the selected subtree when Delete is dispatched at window level", () => {
     let rootId = "";
     act(() => {

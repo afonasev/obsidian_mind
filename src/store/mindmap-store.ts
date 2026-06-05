@@ -4,7 +4,7 @@ import { appendChildY, LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
 import type { NavEntry } from "../domain/nav-history";
 import * as navHistory from "../domain/nav-history";
 import type { Graph, NodeId, Position } from "../domain/types";
-import type { Workspace } from "../domain/workspaces";
+import type { PanelRoot, Workspace } from "../domain/workspaces";
 import * as workspaceOps from "../domain/workspaces";
 import { createDebouncedSaver, type DebouncedSaver } from "../persistence/debounced-saver";
 import * as repository from "../persistence/repository";
@@ -33,6 +33,9 @@ export interface MindMapPersistence {
   saveActiveWorkspaceId(workspaceId: string | null): Promise<void>;
   loadPanelCollapsed(): Promise<boolean>;
   savePanelCollapsed(collapsed: boolean): Promise<void>;
+  loadAllRoots(): Promise<Map<string, readonly PanelRoot[]>>;
+  loadCollapsedRoots(): Promise<readonly string[]>;
+  saveCollapsedRoots(ids: readonly string[]): Promise<void>;
 }
 
 export interface MindMapState {
@@ -57,6 +60,15 @@ export interface MindMapState {
   // Workspace whose name is being edited inline in the panel (create or rename).
   readonly editingWorkspaceId: string | null;
   readonly panelCollapsed: boolean;
+  // Cached roots of INACTIVE workspaces for the panel's second level. The active
+  // workspace's roots are derived live from `graph` (see WorkspacePanel) and are
+  // not read from here.
+  readonly rootsByWorkspace: ReadonlyMap<string, readonly PanelRoot[]>;
+  // Ids of workspaces whose root list is collapsed in the panel (absent = expanded).
+  readonly collapsedWorkspaceRoots: ReadonlySet<string>;
+  // Last "reveal this node" request from the panel. `seq` is a monotone counter so a
+  // repeated click on the same node still re-triggers the canvas's centering effect.
+  readonly reveal: { readonly nodeId: NodeId; readonly seq: number } | null;
   loadWorkspaces(): Promise<void>;
   createWorkspace(): Promise<void>;
   commitWorkspaceName(id: string, name: string): Promise<void>;
@@ -65,6 +77,9 @@ export interface MindMapState {
   deleteWorkspace(id: string): Promise<void>;
   selectWorkspace(id: string): Promise<void>;
   togglePanel(): Promise<void>;
+  toggleWorkspaceRoots(id: string): Promise<void>;
+  revealNode(nodeId: NodeId): void;
+  focusRoot(workspaceId: string, nodeId: NodeId): Promise<void>;
   flush(): Promise<void>;
   addRoot(input: { readonly position: Position; readonly text?: string }): NodeId;
   addChild(input: {
@@ -100,6 +115,12 @@ interface CreateMindMapStoreOptions {
 
 const keepSelection = (graph: Graph, id: NodeId | null): NodeId | null =>
   id !== null && graph.nodes.some((node) => node.id === id) ? id : null;
+
+/** The graph's root nodes as lightweight panel entries, in graph order. */
+const rootsFromGraph = (graph: Graph): readonly PanelRoot[] =>
+  graph.nodes
+    .filter((node) => node.parentId === null)
+    .map((node) => ({ id: node.id, text: node.text }));
 
 const EMPTY_HISTORY: History = { past: [], future: [] };
 
@@ -170,6 +191,14 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       const current = get().activeWorkspaceId;
       if (current !== null) {
         histories.set(current, { past: get().past, future: get().future });
+        // Cache the leaving workspace's roots: once it is inactive the panel reads
+        // them from here instead of the (now-replaced) live graph.
+        set({
+          rootsByWorkspace: new Map(get().rootsByWorkspace).set(
+            current,
+            rootsFromGraph(get().graph),
+          ),
+        });
       }
     }
 
@@ -279,13 +308,19 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       activeWorkspaceId: null,
       editingWorkspaceId: null,
       panelCollapsed: false,
+      rootsByWorkspace: new Map(),
+      collapsedWorkspaceRoots: new Set(),
+      reveal: null,
 
       async loadWorkspaces() {
-        const [workspaces, storedActiveId, panelCollapsed] = await Promise.all([
-          persistence.loadWorkspaces(),
-          persistence.loadActiveWorkspaceId(),
-          persistence.loadPanelCollapsed(),
-        ]);
+        const [workspaces, storedActiveId, panelCollapsed, rootsByWorkspace, collapsedRoots] =
+          await Promise.all([
+            persistence.loadWorkspaces(),
+            persistence.loadActiveWorkspaceId(),
+            persistence.loadPanelCollapsed(),
+            persistence.loadAllRoots(),
+            persistence.loadCollapsedRoots(),
+          ]);
         // A stored active id that no longer exists (deleted) falls back to "none".
         const activeWorkspaceId =
           storedActiveId !== null && workspaces.some((w) => w.id === storedActiveId)
@@ -301,6 +336,9 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           workspaces,
           activeWorkspaceId,
           panelCollapsed,
+          rootsByWorkspace,
+          collapsedWorkspaceRoots: new Set(collapsedRoots),
+          reveal: null,
           graph,
           past: [],
           future: [],
@@ -389,13 +427,23 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           { history: get().navHistory, cursor: get().navCursor },
           id,
         );
+        const nextRoots = new Map(get().rootsByWorkspace);
+        nextRoots.delete(id);
+        const nextCollapsed = new Set(get().collapsedWorkspaceRoots);
+        const wasCollapsed = nextCollapsed.delete(id);
         set({
           workspaces: workspaceOps.removeWorkspace(get().workspaces, id),
           editingWorkspaceId: get().editingWorkspaceId === id ? null : get().editingWorkspaceId,
           navHistory: pruned.history,
           navCursor: pruned.cursor,
+          rootsByWorkspace: nextRoots,
+          collapsedWorkspaceRoots: nextCollapsed,
         });
         await persistence.deleteWorkspace(id);
+        // Drop the collapsed flag from storage too, so a recreated id is not stale.
+        if (wasCollapsed) {
+          await persistence.saveCollapsedRoots([...nextCollapsed]);
+        }
         if (!wasActive) {
           return;
         }
@@ -428,6 +476,30 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         const next = !get().panelCollapsed;
         set({ panelCollapsed: next });
         await persistence.savePanelCollapsed(next);
+      },
+
+      async toggleWorkspaceRoots(id) {
+        const next = new Set(get().collapsedWorkspaceRoots);
+        if (!next.delete(id)) {
+          next.add(id);
+        }
+        set({ collapsedWorkspaceRoots: next });
+        await persistence.saveCollapsedRoots([...next]);
+      },
+
+      revealNode(nodeId) {
+        const seq = (get().reveal?.seq ?? 0) + 1;
+        set({ reveal: { nodeId, seq } });
+      },
+
+      async focusRoot(workspaceId, nodeId) {
+        // Switch to the root's workspace first (loads its graph) so the subsequent
+        // select + reveal act on the graph that actually contains the node.
+        if (workspaceId !== get().activeWorkspaceId) {
+          await get().selectWorkspace(workspaceId);
+        }
+        get().selectNode(nodeId);
+        get().revealNode(nodeId);
       },
 
       async flush() {

@@ -22,6 +22,7 @@ export const WORKSPACES_STORE = "workspaces";
 export const META_STORE = "meta";
 export const META_ACTIVE_WORKSPACE_KEY = "activeWorkspaceId";
 export const META_PANEL_COLLAPSED_KEY = "panelCollapsed";
+export const META_COLLAPSED_ROOTS_KEY = "collapsedWorkspaceRoots";
 
 export interface StoredGraph {
   readonly version: 2;
@@ -33,7 +34,7 @@ export interface StoredGraph {
 
 - **`graph`** — одна запись `StoredGraph` на пространство под ключом `workspaceId` (раньше был фиксированный ключ `current` — один граф на приложение).
 - **`workspaces`** — запись `Workspace { id, name, createdAt }` под ключом `id`. Порядок в списке = сортировка по `createdAt` (делается в `loadWorkspaces`).
-- **`meta`** — два значения под строковыми ключами-константами: `activeWorkspaceId: string | null` и `panelCollapsed: boolean`. Малы и пишутся немедленно (без дебаунса).
+- **`meta`** — три значения под строковыми ключами-константами: `activeWorkspaceId: string | null`, `panelCollapsed: boolean` и `collapsedWorkspaceRoots: string[]` (id пространств, чьи списки корней свёрнуты в панели; отсутствие id = развёрнуто). Малы и пишутся немедленно (без дебаунса).
 
 `nodes` / `edges` типизированы как `unknown` — это сознательно: данные приходят из внешнего источника (предыдущая сессия / повреждённая запись), и любой каст в `MindNode[]` без проверки был бы враньём типизатору. Преобразование в `Graph` идёт через `repository.toGraph` + `sanitize` (см. ниже).
 
@@ -76,6 +77,8 @@ interface Graph {
 - `deleteWorkspace(workspaceId)` — удаляет запись пространства **и его граф** одной транзакцией над `workspaces` + `graph`.
 - `loadActiveWorkspaceId()` / `saveActiveWorkspaceId(id)` — активное пространство в `meta` (`null`, если не выбрано).
 - `loadPanelCollapsed()` / `savePanelCollapsed(collapsed)` — состояние сворачивания панели в `meta` (по умолчанию `false`).
+- `loadAllRoots(): Promise<Map<workspaceId, PanelRoot[]>>` — корни (`parentId === null`) всех пространств одним проходом курсором по `graph`; рёбра не нужны, `sanitize` пропускается. Питает второй уровень панели для **неактивных** пространств (у активного корни деривятся из живого графа).
+- `loadCollapsedRoots()` / `saveCollapsedRoots(ids)` — список свёрнутых списков корней в `meta` (по умолчанию `[]`).
 
 ## Дебаунс автосохранения
 
