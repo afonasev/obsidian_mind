@@ -90,29 +90,29 @@ describe("CloudNode", () => {
     expect(input).toHaveValue("Идея");
   });
 
-  it("commits the edited text on Enter and exits edit mode", async () => {
+  it("inserts a newline on Enter and stays in edit mode", async () => {
     const user = userEvent.setup();
     const id = seedRoot("Старый");
     render(withProvider(<CloudNode {...makeProps({ id, text: "Старый" })} />));
 
     const input = screen.getByTestId("cloud-node-input");
     await user.clear(input);
-    await user.type(input, "Новый{Enter}");
+    await user.type(input, "Первая{Enter}Вторая");
 
-    expect(mindMapStore.getState().graph.nodes[0]?.text).toBe("Новый");
-    expect(mindMapStore.getState().editingNodeId).toBeNull();
+    expect(mindMapStore.getState().graph.nodes[0]?.text).toBe("Первая\nВторая");
+    expect(mindMapStore.getState().editingNodeId).toBe(id);
   });
 
-  it("restores the original text and exits edit mode on Escape", async () => {
+  it("commits the edited text and exits edit mode on Escape", async () => {
     const user = userEvent.setup();
     const id = seedRoot("Идея");
     render(withProvider(<CloudNode {...makeProps({ id, text: "Идея" })} />));
 
     const input = screen.getByTestId("cloud-node-input");
     await user.clear(input);
-    await user.type(input, "Черновик{Escape}");
+    await user.type(input, "Новый{Escape}");
 
-    expect(mindMapStore.getState().graph.nodes[0]?.text).toBe("Идея");
+    expect(mindMapStore.getState().graph.nodes[0]?.text).toBe("Новый");
     expect(mindMapStore.getState().editingNodeId).toBeNull();
   });
 
@@ -369,7 +369,7 @@ describe("CloudNode", () => {
     render(withProvider(<CloudNode {...makeProps({ id, text: "Идея" })} />));
     const input = screen.getByTestId("cloud-node-input");
     await user.clear(input);
-    await user.type(input, "{Enter}");
+    await user.type(input, "{Escape}");
     // The user explicitly cleared a pre-existing node — keep it as an empty leaf,
     // do not auto-discard.
     expect(mindMapStore.getState().graph.nodes).toHaveLength(1);

@@ -1,7 +1,13 @@
 import { type ChangeEvent, type JSX, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import type { Graph } from "../../domain/types";
 import type { PanelRoot, Workspace } from "../../domain/workspaces";
-import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
+import {
+  MAX_PANEL_WIDTH,
+  MIN_PANEL_WIDTH,
+  mindMapStore,
+  useMindMapStore,
+} from "../../store/mindmap-store";
+import { ResizeHandle } from "../ResizeHandle/ResizeHandle";
 import styles from "./WorkspacePanel.module.css";
 
 // Shown for a root whose text is empty (e.g. a freshly created, unnamed root) so
@@ -36,10 +42,13 @@ export function WorkspacePanel(): JSX.Element {
   const graph = useMindMapStore((state) => state.graph);
   const rootsByWorkspace = useMindMapStore((state) => state.rootsByWorkspace);
   const collapsedWorkspaceRoots = useMindMapStore((state) => state.collapsedWorkspaceRoots);
+  const width = useMindMapStore((state) => state.panelWidth);
 
   // Which item's «⋮» menu is open, and which workspace is pending delete-confirm.
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  // Panel width at the moment a resize drag begins.
+  const dragStartWidth = useRef(0);
 
   function handleToggle(): void {
     void mindMapStore.getState().togglePanel();
@@ -87,7 +96,7 @@ export function WorkspacePanel(): JSX.Element {
   }
 
   return (
-    <div className={styles.panel}>
+    <div className={styles.panel} style={{ width }}>
       <div className={styles.header}>
         <span className={styles.title}>Пространства</span>
         <button
@@ -150,6 +159,23 @@ export function WorkspacePanel(): JSX.Element {
           onCancel={() => setPendingDeleteId(null)}
         />
       ) : null}
+
+      <ResizeHandle
+        edge="right"
+        ariaLabel="Изменить ширину панели пространств"
+        value={width}
+        min={MIN_PANEL_WIDTH}
+        max={MAX_PANEL_WIDTH}
+        onResizeStart={() => {
+          dragStartWidth.current = mindMapStore.getState().panelWidth;
+        }}
+        onResize={(deltaX) =>
+          mindMapStore.getState().setPanelWidth(dragStartWidth.current + deltaX, false)
+        }
+        onResizeEnd={() =>
+          mindMapStore.getState().setPanelWidth(mindMapStore.getState().panelWidth, true)
+        }
+      />
     </div>
   );
 }

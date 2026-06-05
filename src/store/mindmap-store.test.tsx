@@ -8,8 +8,11 @@ import type { PanelRoot, Workspace } from "../domain/workspaces";
 import type { DebouncedSaver } from "../persistence/debounced-saver";
 import {
   createMindMapStore,
+  DEFAULT_EDITOR_WIDTH,
   DEFAULT_WORKSPACE_NAME,
   MAX_HISTORY,
+  MAX_PANEL_WIDTH,
+  MIN_PANEL_WIDTH,
   type MindMapPersistence,
   type MindMapStore,
   mindMapStore,
@@ -26,6 +29,12 @@ type FakePersistence = MindMapPersistence & {
   saveActiveWorkspaceId: ReturnType<typeof vi.fn>;
   loadPanelCollapsed: ReturnType<typeof vi.fn>;
   savePanelCollapsed: ReturnType<typeof vi.fn>;
+  loadEditorCollapsed: ReturnType<typeof vi.fn>;
+  saveEditorCollapsed: ReturnType<typeof vi.fn>;
+  loadPanelWidth: ReturnType<typeof vi.fn>;
+  savePanelWidth: ReturnType<typeof vi.fn>;
+  loadEditorWidth: ReturnType<typeof vi.fn>;
+  saveEditorWidth: ReturnType<typeof vi.fn>;
   loadAllRoots: ReturnType<typeof vi.fn>;
   loadCollapsedRoots: ReturnType<typeof vi.fn>;
   saveCollapsedRoots: ReturnType<typeof vi.fn>;
@@ -37,6 +46,9 @@ function makePersistence(): FakePersistence {
   const meta = {
     activeId: null as string | null,
     panel: false,
+    editor: false,
+    panelWidth: null as number | null,
+    editorWidth: null as number | null,
     collapsedRoots: [] as readonly string[],
   };
   return {
@@ -62,6 +74,18 @@ function makePersistence(): FakePersistence {
     loadPanelCollapsed: vi.fn(async () => meta.panel),
     savePanelCollapsed: vi.fn(async (collapsed: boolean) => {
       meta.panel = collapsed;
+    }),
+    loadEditorCollapsed: vi.fn(async () => meta.editor),
+    saveEditorCollapsed: vi.fn(async (collapsed: boolean) => {
+      meta.editor = collapsed;
+    }),
+    loadPanelWidth: vi.fn(async () => meta.panelWidth),
+    savePanelWidth: vi.fn(async (width: number) => {
+      meta.panelWidth = width;
+    }),
+    loadEditorWidth: vi.fn(async () => meta.editorWidth),
+    saveEditorWidth: vi.fn(async (width: number) => {
+      meta.editorWidth = width;
     }),
     loadAllRoots: vi.fn(async () => {
       const map = new Map<string, readonly PanelRoot[]>();
@@ -1012,6 +1036,100 @@ describe("togglePanel", () => {
     expect(persistence.savePanelCollapsed).toHaveBeenCalledWith(true);
     await store.getState().togglePanel();
     expect(store.getState().panelCollapsed).toBe(false);
+  });
+});
+
+describe("toggleEditor", () => {
+  it("flips and persists the editor-collapsed state", async () => {
+    const { store, persistence } = makeStore();
+    await store.getState().toggleEditor();
+    expect(store.getState().editorCollapsed).toBe(true);
+    expect(persistence.saveEditorCollapsed).toHaveBeenCalledWith(true);
+    await store.getState().toggleEditor();
+    expect(store.getState().editorCollapsed).toBe(false);
+  });
+
+  it("restores editorCollapsed on loadWorkspaces", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.saveEditorCollapsed(true);
+    await store.getState().loadWorkspaces();
+    expect(store.getState().editorCollapsed).toBe(true);
+  });
+});
+
+describe("setPanelWidth / setEditorWidth", () => {
+  it("updates the width without persisting during a live drag (commit=false)", () => {
+    const { store, persistence } = makeStore();
+    store.getState().setPanelWidth(300, false);
+    expect(store.getState().panelWidth).toBe(300);
+    expect(persistence.savePanelWidth).not.toHaveBeenCalled();
+  });
+
+  it("persists the width on commit", () => {
+    const { store, persistence } = makeStore();
+    store.getState().setEditorWidth(420, true);
+    expect(store.getState().editorWidth).toBe(420);
+    expect(persistence.saveEditorWidth).toHaveBeenCalledWith(420);
+  });
+
+  it("clamps the width to the panel bounds", () => {
+    const { store } = makeStore();
+    store.getState().setPanelWidth(10_000, false);
+    expect(store.getState().panelWidth).toBe(MAX_PANEL_WIDTH);
+    store.getState().setPanelWidth(0, false);
+    expect(store.getState().panelWidth).toBe(MIN_PANEL_WIDTH);
+  });
+
+  it("restores both widths on loadWorkspaces, falling back to defaults", async () => {
+    const { store, persistence } = makeStore();
+    await persistence.savePanelWidth(260);
+    await store.getState().loadWorkspaces();
+    expect(store.getState().panelWidth).toBe(260);
+    // editorWidth was never stored → default.
+    expect(store.getState().editorWidth).toBe(DEFAULT_EDITOR_WIDTH);
+  });
+});
+
+describe("updateBody", () => {
+  it("commits the body of the selected node", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    store.getState().stopEditing();
+    store.getState().updateBody(id, "# Тело");
+    expect(store.getState().graph.nodes[0]?.body).toBe("# Тело");
+  });
+
+  it("does not reset the node's name or position", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "Имя" });
+    store.getState().stopEditing();
+    store.getState().dropNode(id, { x: 30, y: 40 });
+    store.getState().updateBody(id, "тело");
+    const node = store.getState().graph.nodes[0];
+    expect(node?.text).toBe("Имя");
+    expect(node?.position).toEqual({ x: 30, y: 40 });
+  });
+
+  it("participates in undo, reverting to the previous body", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    store.getState().stopEditing();
+    store.getState().updateBody(id, "первое");
+    store.getState().selectNode(id); // closes the coalescing window
+    store.getState().updateBody(id, "второе");
+    store.getState().undo();
+    expect(store.getState().graph.nodes[0]?.body).toBe("первое");
+  });
+
+  it("collapses a series of edits to one body into a single undo step", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    store.getState().stopEditing();
+    store.getState().updateBody(id, "a");
+    store.getState().updateBody(id, "ab");
+    store.getState().updateBody(id, "abc");
+    store.getState().undo();
+    expect(store.getState().graph.nodes[0]?.body).toBeUndefined();
   });
 });
 

@@ -211,7 +211,8 @@ export function handleNodeDoubleClick(
 }
 
 export function handlePaneClick(): void {
-  mindMapStore.getState().selectNode(null);
+  // Clicking empty space keeps the current selection — it only changes when a node
+  // is created or another node is clicked. Editing still ends (commits) on a pane click.
   if (mindMapStore.getState().editingNodeId !== null) {
     mindMapStore.getState().stopEditing();
   }
@@ -231,10 +232,13 @@ export function handlePaneDoubleClick(
 }
 
 export function handleCanvasKeyDown(event: KeyboardEvent): void {
-  // The editor input keeps Enter / Escape / arrow keys for itself. React's
-  // synthetic stopPropagation does not block native window listeners, so we
-  // also opt-out at the source when an input has focus.
-  if (event.target instanceof HTMLInputElement) {
+  // Any focused editable field (node label / title input / markdown body) keeps
+  // Enter / Backspace / arrows for itself. React's synthetic stopPropagation does
+  // not block native window listeners, so we opt out at the source. The body editor
+  // is a <textarea> that does not set editingNodeId, so the editingNodeId guard
+  // below is not enough — match the element type too.
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
     return;
   }
   const state = mindMapStore.getState();

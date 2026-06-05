@@ -9,6 +9,7 @@ import {
   removeSubtree,
   reparentSubtree,
   type Subtree,
+  updateBody,
   updateText,
 } from "./graph";
 import type { Graph, NodeId } from "./types";
@@ -179,6 +180,32 @@ describe("updateText", () => {
     const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
     const after = updateText(root.graph, { nodeId: "missing" as NodeId, text: "x" });
     expect(after.nodes).toEqual(root.graph.nodes);
+  });
+});
+
+describe("updateBody", () => {
+  it("sets the body of the targeted node without touching others, edges or positions", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "root" });
+    const child = addChild(root.graph, {
+      parentId: root.nodeId,
+      position: { x: 200, y: 50 },
+      text: "child",
+    });
+    const after = updateBody(child.graph, { nodeId: root.nodeId, body: "# Заметка" });
+    expect(after.nodes.find((node) => node.id === root.nodeId)?.body).toBe("# Заметка");
+    expect(after.nodes.find((node) => node.id === child.nodeId)?.body).toBeUndefined();
+    expect(after.nodes.find((node) => node.id === child.nodeId)?.position).toEqual({
+      x: 200,
+      y: 50,
+    });
+    expect(after.edges).toEqual(child.graph.edges);
+  });
+
+  it("is a no-op for an unknown node id", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const after = updateBody(root.graph, { nodeId: "missing" as NodeId, body: "x" });
+    expect(after.nodes).toEqual(root.graph.nodes);
+    expect(after.edges).toEqual(root.graph.edges);
   });
 });
 

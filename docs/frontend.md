@@ -19,14 +19,18 @@ export function App(): JSX.Element {
 
 После реализации UI-слоя будут (см. спецификацию [`openspec/changes/init-mindmap-spa/specs/mindmap-editor/spec.md`](../openspec/changes/init-mindmap-spa/specs/mindmap-editor/spec.md)):
 
-- **`src/components/Canvas/Canvas.tsx`** — обёртка `<ReactFlow>` из `@xyflow/react`. Регистрирует тип узла `cloud`, ловит события канваса: двойной клик по пустому месту → `addRoot`, клик по узлу → `selectNode`, клик по пустому → `selectNode(null)`, перетаскивание → `moveNode`, клавиатуру (стрелки → навигация по выделению, `Delete` / `Backspace` → `removeSubtree`, `Enter` → сосед / `Cmd/Ctrl+Enter` → ребёнок (через `addChildOf`, в т.ч. из редактора) / `F2` → `startEditing`, `Escape` → `stopEditing`, `Cmd/Ctrl+Z` → `undo`, `Cmd/Ctrl+Shift+Z` / `Ctrl+Y` → `redo`, `Alt+←` / `Alt+→` (или `Cmd/Ctrl+←` / `Cmd/Ctrl+→`) → `goBack` / `goForward` по истории фокуса). На `<ReactFlow>` выставлены **`disableKeyboardA11y`** (встроенный перенос узла стрелками выключен — стрелки только двигают выделение) и **`nodesFocusable={false}`** (узлы не получают tabindex, React Flow не вмешивается в фокус). `toRFNodes` задаёт каждому узлу **`initialWidth`/`initialHeight`** (оценка ширины через `estimateNodeWidth`): иначе React Flow рендерит свежий узел `visibility:hidden` до измерения, и автофокус инпута срывается в `<body>`, проглатывая первые символы. При изменении размера окна слушатель `resize` вызывает `fitView`, перецентрируя контент в середину видимой области. Эффект по `reveal` (запрос из панели через `revealNode`/`focusRoot`) вызывает `fitView({ nodes: [{ id }], maxZoom: 1 })`, подводя вьюпорт к конкретному узлу; зависит от всего объекта `reveal`, т.к. `seq` инкрементится на каждый запрос — повторный reveal того же узла снова срабатывает. При маунте `App` вызывает `loadFromStorage()`.
-- **`src/components/CloudNode/CloudNode.tsx`** — кастомная нода `@xyflow/react`. Скруглённый прямоугольник с тенью и текстом по центру; min-width 120 px, max-width 360 px; перенос по словам. Состояния: обычное / выделенное / редактирование. На правой грани при hover/selected — кнопка «+» для создания дочернего узла (`addChild`).
+- **`src/components/Canvas/Canvas.tsx`** — обёртка `<ReactFlow>` из `@xyflow/react`. Регистрирует тип узла `cloud`, ловит события канваса: двойной клик по пустому месту → `addRoot`, клик по узлу → `selectNode`, клик по пустому месту → только завершает редактирование (выделение сохраняется), перетаскивание → `moveNode`, клавиатуру (стрелки → навигация по выделению, `Delete` / `Backspace` → `removeSubtree`, `Enter` → сосед / `Cmd/Ctrl+Enter` → ребёнок (через `addChildOf`, в т.ч. из редактора) / `F2` → `startEditing`, `Escape` → `stopEditing`, `Cmd/Ctrl+Z` → `undo`, `Cmd/Ctrl+Shift+Z` / `Ctrl+Y` → `redo`, `Alt+←` / `Alt+→` (или `Cmd/Ctrl+←` / `Cmd/Ctrl+→`) → `goBack` / `goForward` по истории фокуса). На `<ReactFlow>` выставлены **`disableKeyboardA11y`** (встроенный перенос узла стрелками выключен — стрелки только двигают выделение) и **`nodesFocusable={false}`** (узлы не получают tabindex, React Flow не вмешивается в фокус). `toRFNodes` задаёт каждому узлу **`initialWidth`/`initialHeight`** (оценка ширины через `estimateNodeWidth`): иначе React Flow рендерит свежий узел `visibility:hidden` до измерения, и автофокус инпута срывается в `<body>`, проглатывая первые символы. При изменении размера окна слушатель `resize` вызывает `fitView`, перецентрируя контент в середину видимой области. Эффект по `reveal` (запрос из панели через `revealNode`/`focusRoot`) вызывает `fitView({ nodes: [{ id }], maxZoom: 1 })`, подводя вьюпорт к конкретному узлу; зависит от всего объекта `reveal`, т.к. `seq` инкрементится на каждый запрос — повторный reveal того же узла снова срабатывает. При маунте `App` вызывает `loadFromStorage()`.
+- **`src/components/CloudNode/CloudNode.tsx`** — кастомная нода `@xyflow/react`. Скруглённый прямоугольник с тенью и текстом по центру; min-width 120 px, max-width 360 px; перенос по словам, многострочный текст (`white-space: pre-wrap`). Состояния: обычное / выделенное / редактирование. В режиме редактирования — многострочный `<textarea>` (размер по содержимому через `cols`/`rows`): `Enter` вставляет перенос строки, `Escape` и клик вне поля фиксируют текст и выходят, `Cmd/Ctrl+Enter` фиксирует и создаёт ребёнка. На правой грани при hover/selected — кнопка «+» для создания дочернего узла (`addChild`).
 - **`src/components/CloudNode/CloudNode.module.css`** — стили узла.
 - **`src/components/FocusNav/FocusNav.tsx`** — кнопки «Назад» / «Вперёд» (`aria-label`) в левом верхнем углу канваса, управляющие осью истории фокуса. `disabled` считается прямо в рендере доменными хелперами `canGoBack` / `canGoForward` от `navHistory` / `navCursor`; клики зовут `goBack` / `goForward`. Дублируются хоткеями `Alt+←` / `Alt+→` (или `Cmd/Ctrl+←` / `Cmd/Ctrl+→`).
 - **`src/components/HotkeysHelp/HotkeysHelp.tsx`** — справка по горячим клавишам: кнопка «?» в углу канваса, по клику открывает панель со списком сочетаний. Статический оверлей, не зависит от стора; закрывается повторным кликом, кликом вне или `Escape` (Escape не всплывает на канвас, чтобы не снять выделение).
 - **`src/components/WorkspacePanel/WorkspacePanel.tsx`** — сворачиваемая панель пространств слева. Вертикальный список (активное выделено через `aria-current`), кнопка `[+]` (`Создать пространство`) под списком, у каждого элемента `⋮`-меню (`role="menu"`) с «Переименовать» и «Удалить». Создание и переименование — inline-инпут (`aria-label="Имя пространства"`, единая точка коммита — `onBlur`, `Enter`/`Escape` доводят до blur). Удаление — попап подтверждения (`role="dialog"`, «Удалить» / «Отмена», Escape отменяет). Состояние сворачивания читается из стора (`panelCollapsed`). **Второй уровень**: под каждым пространством — вложенный список его корней (шеврон `aria-expanded` слева от имени сворачивает список, состояние в `collapsedWorkspaceRoots`); корни активного пространства деривятся из живого `graph`, неактивных — из `rootsByWorkspace`, пустой текст → «Без названия»; клик по корню зовёт `focusRoot`. В свёрнутой панели корни не рендерятся. Все мутации идут через экшены стора (`createWorkspace`, `selectWorkspace`, `startWorkspaceRename`, `commitWorkspaceName`, `cancelWorkspaceName`, `deleteWorkspace`, `togglePanel`, `toggleWorkspaceRoots`, `focusRoot`).
 
-`App.tsx` рендерит `WorkspacePanel` рядом с `Canvas` (flex-row) и при маунте вызывает `loadWorkspaces()`. Канвас показывает подсказку «Создайте пространство…» (`role="note"`), пока нет активного пространства; в этом состоянии `addRoot` — no-op (создание корней запрещено).
+- **`src/components/EditorPanel/EditorPanel.tsx`** — сворачиваемая панель-редактор тела узла справа, зеркало `WorkspacePanel`. В свёрнутом виде — узкая полоса с кнопкой развернуть (состояние `editorCollapsed`, переключение через `toggleEditor`). В развёрнутом показывает содержимое для выбранного узла (`selectedNodeId`); без выбора — подсказку. Для не-корневого узла над заголовком — кликабельная строка с именем родителя (`selectNode(parentId)` + `revealNode(parentId)`); у корня (`parentId === null`) строка отсутствует. Поле-заголовок = `node.text` с «живой» правкой через `updateText` (двусторонняя связь с инлайн-правкой на канвасе). Тело: режим просмотра рендерит markdown через `react-markdown` + `remark-gfm` (без `dangerouslySetInnerHTML`, см. [`decisions/2026-06-05_markdown-render.md`](./decisions/2026-06-05_markdown-render.md)), клик переключает в правку сырого markdown в `<textarea>`; пустое тело → кликабельный плейсхолдер. В режиме правки `textarea` держит локальный буфер (`useState` + `ref` на актуальный текст); коммит `updateBody` происходит на `onBlur`, по таймеру 1 с без ввода и на размонтировании при смене узла (cleanup `useEffect`), идемпотентно (не коммитит, если буфер == текущему телу).
+
+- **`src/components/ResizeHandle/ResizeHandle.tsx`** — переиспользуемый вертикальный «сплиттер» (`role="separator"`, focusable, `aria-valuenow/min/max`) для регулировки ширины боковой панели. Тянется мышью (слушатели `mousemove`/`mouseup` на `window` живут на время drag) или клавишами ←/→ при фокусе. Колбэки `onResizeStart`/`onResize(deltaX)`/`onResizeEnd` — родитель снимает стартовую ширину, считает новую из дельты и персистит на отпускании. Левая панель ставит его на правую грань (`edge="right"`), правая — на левую (`edge="left"`).
+
+`App.tsx` рендерит трёхколоночную CSS-grid раскладку `WorkspacePanel | Canvas | EditorPanel` и при маунте вызывает `loadWorkspaces()`. Ширины боковых панелей берутся из стора (`panelWidth`/`editorWidth`) и применяются inline-стилем; в свёрнутом виде ширина фиксирована. Канвас показывает подсказку «Создайте пространство…» (`role="note"`), пока нет активного пространства; в этом состоянии `addRoot` — no-op (создание корней запрещено).
 
 Правила для компонентов — [`.claude/rules/react.md`](../.claude/rules/react.md).
 
@@ -56,10 +60,13 @@ interface MindMapState {
   readonly activeWorkspaceId: string | null;
   readonly editingWorkspaceId: string | null; // пространство в режиме inline-переименования
   readonly panelCollapsed: boolean;
+  readonly editorCollapsed: boolean;                                    // правая панель-редактор свёрнута
+  readonly panelWidth: number;                                          // ширина левой панели (px)
+  readonly editorWidth: number;                                         // ширина правой панели (px)
   readonly rootsByWorkspace: ReadonlyMap<string, readonly PanelRoot[]>; // корни НЕактивных пространств для второго уровня панели
   readonly collapsedWorkspaceRoots: ReadonlySet<string>;                // пространства со свёрнутым списком корней
   readonly reveal: { nodeId: NodeId; seq: number } | null;              // запрос центрирования вьюпорта (seq — монотонный нонс)
-  loadWorkspaces(): Promise<void>;            // старт: список + активное + панель + граф + корни + свёрнутость
+  loadWorkspaces(): Promise<void>;            // старт: список + активное + панель + граф + корни + свёрнутость + editorCollapsed
   createWorkspace(): Promise<void>;           // активирует новое и открывает inline-ввод имени
   commitWorkspaceName(id, name): Promise<void>;
   cancelWorkspaceName(id): Promise<void>;
@@ -67,6 +74,9 @@ interface MindMapState {
   deleteWorkspace(id): Promise<void>;         // граф + переход на соседа / в пустое состояние
   selectWorkspace(id): Promise<void>;
   togglePanel(): Promise<void>;
+  toggleEditor(): Promise<void>;              // свернуть/развернуть правую панель-редактор (персист в meta)
+  setPanelWidth(width, commit): void;         // ширина левой панели (clamp); commit=true → персист
+  setEditorWidth(width, commit): void;        // ширина правой панели (clamp); commit=true → персист
   toggleWorkspaceRoots(id): Promise<void>;    // свернуть/развернуть список корней пространства (персист в meta)
   revealNode(nodeId): void;                   // попросить канвас центрировать вьюпорт на узле
   focusRoot(workspaceId, nodeId): Promise<void>; // клик по корню: активировать пространство → выделить → центрировать
@@ -76,6 +86,7 @@ interface MindMapState {
   addChild(input: { readonly parentId: NodeId; readonly position: Position; readonly text?: string }): NodeId;
   removeSubtree(nodeId: NodeId): void;
   updateText(nodeId: NodeId, text: string): void;
+  updateBody(nodeId: NodeId, body: string): void; // правка markdown-тела узла (без layout)
   moveNode(nodeId: NodeId, position: Position): void;
   selectNode(nodeId: NodeId | null): void;
   startEditing(nodeId: NodeId): void;
@@ -102,7 +113,7 @@ interface MindMapState {
 
 Гранулярность одного шага отмены задаётся склейкой:
 
-- Серия `updateText` одного узла (набор текста) и серия `moveNode` одного узла (drag) склеиваются в один шаг по ключу `text:<id>` / `move:<id>`. Canvas вызывает `endCoalescing()` на завершении drag (`dragging === false`), чтобы следующий drag того же узла стал отдельным шагом.
+- Серия `updateText` одного узла (набор текста), серия `updateBody` одного узла (правка тела) и серия `moveNode` одного узла (drag) склеиваются в один шаг по ключу `text:<id>` / `body:<id>` / `move:<id>`. Canvas вызывает `endCoalescing()` на завершении drag (`dragging === false`), чтобы следующий drag того же узла стал отдельным шагом. `updateBody` не вызывает `layout()` — тело не влияет на канвас.
 - Свежесозданная нода моделируется как транзакция (служебные `pendingBaseline` / `pendingNodeId`, живут в замыкании фабрики, не в state): создание + ввод имени = один шаг отмены; если ноду бросили пустой, `removeSubtree` откатывает к снимку до создания **без записи в историю**.
 - Любая новая мутация очищает `future` (отменённая ветка отбрасывается). `moveNode` с неизменной позицией — no-op и в историю не пишется.
 

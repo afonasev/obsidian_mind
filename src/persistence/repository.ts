@@ -5,7 +5,10 @@ import {
   GRAPH_STORE,
   META_ACTIVE_WORKSPACE_KEY,
   META_COLLAPSED_ROOTS_KEY,
+  META_EDITOR_COLLAPSED_KEY,
+  META_EDITOR_WIDTH_KEY,
   META_PANEL_COLLAPSED_KEY,
+  META_PANEL_WIDTH_KEY,
   META_STORE,
   openMindMapDb,
   type StoredGraph,
@@ -132,6 +135,65 @@ export async function savePanelCollapsed(collapsed: boolean): Promise<void> {
   const db = await openMindMapDb();
   try {
     await db.put(META_STORE, collapsed, META_PANEL_COLLAPSED_KEY);
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadEditorCollapsed(): Promise<boolean> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, META_EDITOR_COLLAPSED_KEY);
+    return value === true;
+  } finally {
+    db.close();
+  }
+}
+
+export async function saveEditorCollapsed(collapsed: boolean): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, collapsed, META_EDITOR_COLLAPSED_KEY);
+  } finally {
+    db.close();
+  }
+}
+
+/** Stored width (px) of the left panel, or null when the user never resized it. */
+export async function loadPanelWidth(): Promise<number | null> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, META_PANEL_WIDTH_KEY);
+    return typeof value === "number" ? value : null;
+  } finally {
+    db.close();
+  }
+}
+
+export async function savePanelWidth(width: number): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, width, META_PANEL_WIDTH_KEY);
+  } finally {
+    db.close();
+  }
+}
+
+/** Stored width (px) of the right editor panel, or null when never resized. */
+export async function loadEditorWidth(): Promise<number | null> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, META_EDITOR_WIDTH_KEY);
+    return typeof value === "number" ? value : null;
+  } finally {
+    db.close();
+  }
+}
+
+export async function saveEditorWidth(width: number): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, width, META_EDITOR_WIDTH_KEY);
   } finally {
     db.close();
   }

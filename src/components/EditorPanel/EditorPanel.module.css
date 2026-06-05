@@ -1,0 +1,156 @@
+.panel {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  height: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+  background: #f7f7fb;
+  border-left: 1px solid #e2e2ea;
+}
+
+.collapsed {
+  width: 40px;
+  padding: 12px 4px;
+  align-items: center;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #333;
+}
+
+.toggle {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #d0d0d8;
+  background: #ffffff;
+  color: #444;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toggle:hover {
+  background: #eeeef4;
+}
+
+.empty {
+  margin: 0;
+  padding: 8px 4px;
+  color: #888;
+  font-size: 13px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.parent {
+  align-self: flex-start;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: #6a6a85;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parent:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #3a3a55;
+}
+
+.titleInput {
+  padding: 8px 10px;
+  border: 1px solid #d0d0d8;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #222;
+  outline: none;
+}
+
+.titleInput:focus {
+  border-color: #8a9bff;
+}
+
+.bodyView {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #222;
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: text;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.bodyView:hover {
+  border-color: #e2e2ea;
+}
+
+/* Tame the default heading/list margins of the rendered markdown so the body
+   reads as a compact note rather than an article. */
+.bodyView :first-child {
+  margin-top: 0;
+}
+
+.bodyView :last-child {
+  margin-bottom: 0;
+}
+
+.bodyPlaceholder {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px dashed #c4c4d0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #999;
+  font-size: 14px;
+  text-align: left;
+  cursor: text;
+}
+
+.bodyPlaceholder:hover {
+  background: #fafaff;
+}
+
+.bodyTextarea {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid #8a9bff;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #222;
+  resize: none;
+  outline: none;
+}

@@ -24,7 +24,9 @@ const NODE_BORDER = 4; // 2px border on each side
  */
 export function estimateNodeWidth(text: string, isRoot: boolean): number {
   const charWidth = isRoot ? ROOT_CHAR_WIDTH : NON_ROOT_CHAR_WIDTH;
-  const raw = text.length * charWidth + NODE_HORIZONTAL_PADDING + NODE_BORDER;
+  // Multi-line labels are as wide as their longest line, not the total length.
+  const longestLine = text.split("\n").reduce((max, line) => Math.max(max, line.length), 0);
+  const raw = longestLine * charWidth + NODE_HORIZONTAL_PADDING + NODE_BORDER;
   return Math.min(LAYOUT_MAX_WIDTH, Math.max(LAYOUT_MIN_WIDTH, raw));
 }
 

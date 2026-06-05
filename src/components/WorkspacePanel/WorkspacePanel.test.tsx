@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DB_NAME } from "../../persistence/db";
@@ -27,6 +27,7 @@ function resetStore(): void {
       activeWorkspaceId: null,
       editingWorkspaceId: null,
       panelCollapsed: false,
+      panelWidth: 240,
       rootsByWorkspace: new Map(),
       collapsedWorkspaceRoots: new Set(),
       reveal: null,
@@ -402,5 +403,28 @@ describe("WorkspacePanel — roots", () => {
     render(<WorkspacePanel />);
 
     expect(screen.queryByRole("button", { name: "Идея" })).toBeNull();
+  });
+});
+
+describe("WorkspacePanel — resize", () => {
+  it("widens the panel as the handle is dragged and keeps the width on release", () => {
+    render(<WorkspacePanel />);
+    const handle = screen.getByRole("separator", {
+      name: "Изменить ширину панели пространств",
+    });
+
+    act(() => {
+      fireEvent.mouseDown(handle, { clientX: 0 });
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 40 }));
+    });
+    // 240 (start) + 40 (drag).
+    expect(mindMapStore.getState().panelWidth).toBe(280);
+
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup"));
+    });
+    expect(mindMapStore.getState().panelWidth).toBe(280);
   });
 });

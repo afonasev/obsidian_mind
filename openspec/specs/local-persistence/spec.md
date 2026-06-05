@@ -8,7 +8,7 @@
 
 ### Requirement: Хранение графа в IndexedDB
 
-Приложение SHALL хранить графы mindmap (узлы и рёбра) в локальной базе IndexedDB браузера / webview, без зависимости от внешнего сервера. База SHALL иметь имя `mindmap` и версию `2`. Внутри базы SHALL существовать object store `graph`, где граф каждого пространства хранится отдельной записью под ключом `workspaceId`; object store `workspaces` со списком пространств; object store `meta` для активного пространства и UI-настроек.
+Приложение SHALL хранить графы mindmap (узлы и рёбра) в локальной базе IndexedDB браузера / webview, без зависимости от внешнего сервера. База SHALL иметь имя `mindmap` и версию `2`. Внутри базы SHALL существовать object store `graph`, где граф каждого пространства хранится отдельной записью под ключом `workspaceId`; object store `workspaces` со списком пространств; object store `meta` для активного пространства и UI-настроек. Узел MAY нести опциональное поле `body` — markdown-тело узла; записи без `body` SHALL читаться корректно (тело считается пустым), миграция не требуется.
 
 #### Scenario: Первый запуск создаёт пустую базу
 
@@ -18,12 +18,31 @@
 #### Scenario: Структура хранимой записи графа
 
 - **WHEN** в store `graph` присутствует запись под ключом `workspaceId`
-- **THEN** значение записи имеет форму `{ version: 2, nodes: Node[], edges: Edge[], updatedAt: number }`, где `Node` содержит `{ id, text, position: { x, y }, parentId }`, а `Edge` — `{ id, source, target }`
+- **THEN** значение записи имеет форму `{ version: 2, nodes: Node[], edges: Edge[], updatedAt: number }`, где `Node` содержит `{ id, text, position: { x, y }, parentId }` и опционально `body: string`, а `Edge` — `{ id, source, target }`
+
+#### Scenario: Старая запись без поля body читается корректно
+
+- **WHEN** в store `graph` есть запись, узлы которой не содержат поля `body` (сохранены до появления тел)
+- **THEN** граф загружается без ошибки, тело таких узлов считается пустым, миграция не выполняется
 
 #### Scenario: Структура записи пространства
 
 - **WHEN** в store `workspaces` присутствует запись пространства
 - **THEN** значение записи имеет форму `{ id: string, name: string, createdAt: number }`
+
+### Requirement: Хранение состояния правой панели в meta
+
+Приложение SHALL хранить состояние «свёрнута/развёрнута» правой панели-редактора в object store `meta` под ключом `editorPanelCollapsed`. При отсутствии ключа состояние SHALL трактоваться как «развёрнута».
+
+#### Scenario: Состояние панели сохраняется в meta
+
+- **WHEN** пользователь сворачивает или разворачивает правую панель
+- **THEN** в store `meta` под ключом `editorPanelCollapsed` сохраняется булево значение текущего состояния
+
+#### Scenario: Отсутствие ключа трактуется как развёрнута
+
+- **WHEN** при старте в `meta` нет ключа `editorPanelCollapsed`
+- **THEN** правая панель отображается развёрнутой
 
 ### Requirement: Автозагрузка графа при старте
 

@@ -41,9 +41,11 @@ persistence ──▶ domain
 
 ## Desktop-обёртка: Tauri
 
-`src-tauri/` — Rust-крейт `app_lib`, точка входа — `src-tauri/src/main.rs` → `app_lib::run()` в `lib.rs`. Сейчас в нём только `tauri::Builder::default()` + подключение `tauri-plugin-log` в debug. Кастомных команд (`#[tauri::command]`) нет.
+`src-tauri/` — Rust-крейт `app_lib`, точка входа — `src-tauri/src/main.rs` → `app_lib::run()` в `lib.rs`. В нём `tauri::Builder::default()` + подключение `tauri-plugin-log` в debug и `tauri-plugin-window-state` (только desktop, под `#[cfg(desktop)]`). Кастомных команд (`#[tauri::command]`) нет.
 
-`src-tauri/tauri.conf.json` описывает окно, dev-URL (`http://localhost:5173`) и команды `beforeDevCommand` / `beforeBuildCommand`, проксирующие в `bun run dev` / `bun run build`.
+`tauri-plugin-window-state` автоматически сохраняет размер и положение окна при выходе и восстанавливает их при следующем запуске. Первый запуск использует размеры из `tauri.conf.json` (`width`/`height`); дальше окно открывается в последнем заданном пользователем размере. Требует разрешения `window-state:default` в `src-tauri/capabilities/default.json`.
+
+`src-tauri/tauri.conf.json` описывает окно (стартовые размеры), dev-URL (`http://localhost:5173`) и команды `beforeDevCommand` / `beforeBuildCommand`, проксирующие в `bun run dev` / `bun run build`.
 
 Работа с файлами на диске пользователя планируется отдельным change — там появятся первые команды и `docs/architecture.md` обновится разделом про IPC-контракт. Правила для будущего Rust-кода — в [`.claude/rules/tauri.md`](../.claude/rules/tauri.md).
 

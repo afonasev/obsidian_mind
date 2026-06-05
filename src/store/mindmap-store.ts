@@ -17,6 +17,18 @@ export const MAX_HISTORY = 100;
 // Fallback name for a workspace created via «+» whose name is left empty.
 export const DEFAULT_WORKSPACE_NAME = "Новое пространство";
 
+// Default and bounds (px) for the resizable side panels. Widths persist per the
+// editorPanelWidth/panelWidth meta keys; the bounds clamp user drags.
+export const DEFAULT_PANEL_WIDTH = 240;
+export const MIN_PANEL_WIDTH = 160;
+export const MAX_PANEL_WIDTH = 480;
+export const DEFAULT_EDITOR_WIDTH = 320;
+export const MIN_EDITOR_WIDTH = 220;
+export const MAX_EDITOR_WIDTH = 680;
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
+
 interface History {
   readonly past: readonly Graph[];
   readonly future: readonly Graph[];
@@ -33,6 +45,12 @@ export interface MindMapPersistence {
   saveActiveWorkspaceId(workspaceId: string | null): Promise<void>;
   loadPanelCollapsed(): Promise<boolean>;
   savePanelCollapsed(collapsed: boolean): Promise<void>;
+  loadEditorCollapsed(): Promise<boolean>;
+  saveEditorCollapsed(collapsed: boolean): Promise<void>;
+  loadPanelWidth(): Promise<number | null>;
+  savePanelWidth(width: number): Promise<void>;
+  loadEditorWidth(): Promise<number | null>;
+  saveEditorWidth(width: number): Promise<void>;
   loadAllRoots(): Promise<Map<string, readonly PanelRoot[]>>;
   loadCollapsedRoots(): Promise<readonly string[]>;
   saveCollapsedRoots(ids: readonly string[]): Promise<void>;
@@ -60,6 +78,11 @@ export interface MindMapState {
   // Workspace whose name is being edited inline in the panel (create or rename).
   readonly editingWorkspaceId: string | null;
   readonly panelCollapsed: boolean;
+  // Collapsed state of the right-hand editor panel (default false = expanded).
+  readonly editorCollapsed: boolean;
+  // User-adjusted widths (px) of the left and right panels.
+  readonly panelWidth: number;
+  readonly editorWidth: number;
   // Cached roots of INACTIVE workspaces for the panel's second level. The active
   // workspace's roots are derived live from `graph` (see WorkspacePanel) and are
   // not read from here.
@@ -77,6 +100,11 @@ export interface MindMapState {
   deleteWorkspace(id: string): Promise<void>;
   selectWorkspace(id: string): Promise<void>;
   togglePanel(): Promise<void>;
+  toggleEditor(): Promise<void>;
+  // Resize a side panel. `commit` persists the (clamped) width; pass false during a
+  // live drag and true once on release.
+  setPanelWidth(width: number, commit: boolean): void;
+  setEditorWidth(width: number, commit: boolean): void;
   toggleWorkspaceRoots(id: string): Promise<void>;
   revealNode(nodeId: NodeId): void;
   focusRoot(workspaceId: string, nodeId: NodeId): Promise<void>;
@@ -93,6 +121,7 @@ export interface MindMapState {
   cutNode(nodeId: NodeId): void;
   pasteInto(parentId: NodeId): void;
   updateText(nodeId: NodeId, text: string): void;
+  updateBody(nodeId: NodeId, body: string): void;
   moveNode(nodeId: NodeId, position: Position): void;
   dropNode(nodeId: NodeId, position: Position): void;
   reparent(nodeId: NodeId, newParentId: NodeId): void;
@@ -308,19 +337,33 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       activeWorkspaceId: null,
       editingWorkspaceId: null,
       panelCollapsed: false,
+      editorCollapsed: false,
+      panelWidth: DEFAULT_PANEL_WIDTH,
+      editorWidth: DEFAULT_EDITOR_WIDTH,
       rootsByWorkspace: new Map(),
       collapsedWorkspaceRoots: new Set(),
       reveal: null,
 
       async loadWorkspaces() {
-        const [workspaces, storedActiveId, panelCollapsed, rootsByWorkspace, collapsedRoots] =
-          await Promise.all([
-            persistence.loadWorkspaces(),
-            persistence.loadActiveWorkspaceId(),
-            persistence.loadPanelCollapsed(),
-            persistence.loadAllRoots(),
-            persistence.loadCollapsedRoots(),
-          ]);
+        const [
+          workspaces,
+          storedActiveId,
+          panelCollapsed,
+          editorCollapsed,
+          storedPanelWidth,
+          storedEditorWidth,
+          rootsByWorkspace,
+          collapsedRoots,
+        ] = await Promise.all([
+          persistence.loadWorkspaces(),
+          persistence.loadActiveWorkspaceId(),
+          persistence.loadPanelCollapsed(),
+          persistence.loadEditorCollapsed(),
+          persistence.loadPanelWidth(),
+          persistence.loadEditorWidth(),
+          persistence.loadAllRoots(),
+          persistence.loadCollapsedRoots(),
+        ]);
         // A stored active id that no longer exists (deleted) falls back to "none".
         const activeWorkspaceId =
           storedActiveId !== null && workspaces.some((w) => w.id === storedActiveId)
@@ -336,6 +379,9 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           workspaces,
           activeWorkspaceId,
           panelCollapsed,
+          editorCollapsed,
+          panelWidth: storedPanelWidth ?? DEFAULT_PANEL_WIDTH,
+          editorWidth: storedEditorWidth ?? DEFAULT_EDITOR_WIDTH,
           rootsByWorkspace,
           collapsedWorkspaceRoots: new Set(collapsedRoots),
           reveal: null,
@@ -476,6 +522,28 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         const next = !get().panelCollapsed;
         set({ panelCollapsed: next });
         await persistence.savePanelCollapsed(next);
+      },
+
+      async toggleEditor() {
+        const next = !get().editorCollapsed;
+        set({ editorCollapsed: next });
+        await persistence.saveEditorCollapsed(next);
+      },
+
+      setPanelWidth(width, commit) {
+        const next = clamp(width, MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
+        set({ panelWidth: next });
+        if (commit) {
+          void persistence.savePanelWidth(next);
+        }
+      },
+
+      setEditorWidth(width, commit) {
+        const next = clamp(width, MIN_EDITOR_WIDTH, MAX_EDITOR_WIDTH);
+        set({ editorWidth: next });
+        if (commit) {
+          void persistence.saveEditorWidth(next);
+        }
       },
 
       async toggleWorkspaceRoots(id) {
@@ -620,6 +688,13 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           return;
         }
         commit(next, `text:${nodeId}`);
+      },
+
+      updateBody(nodeId, body) {
+        // No layout: the body never renders on the canvas, so the tree does not
+        // re-flow. Coalesce a typing burst on one node into a single undo step,
+        // separate from name edits (`text:`) and moves (`move:`).
+        commit(graphOps.updateBody(get().graph, { nodeId, body }), `body:${nodeId}`);
       },
 
       moveNode(nodeId, position) {

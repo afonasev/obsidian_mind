@@ -10,6 +10,11 @@ export const META_STORE = "meta";
 // Fixed keys inside the `meta` object store.
 export const META_ACTIVE_WORKSPACE_KEY = "activeWorkspaceId";
 export const META_PANEL_COLLAPSED_KEY = "panelCollapsed";
+// Collapsed state of the right-hand editor panel (absent = expanded).
+export const META_EDITOR_COLLAPSED_KEY = "editorPanelCollapsed";
+// User-adjusted widths (px) of the left and right panels (absent = default width).
+export const META_PANEL_WIDTH_KEY = "panelWidth";
+export const META_EDITOR_WIDTH_KEY = "editorPanelWidth";
 // Ids of workspaces whose root list is collapsed in the panel (absent = expanded).
 export const META_COLLAPSED_ROOTS_KEY = "collapsedWorkspaceRoots";
 

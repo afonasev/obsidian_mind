@@ -21,7 +21,7 @@ test("a freshly created node accepts typing immediately", async ({ page }) => {
 
   await page.dblclick(".react-flow__pane", { position: { x: 320, y: 240 } });
   await page.keyboard.type("Привет");
-  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
 
   await expect(page.getByTestId("cloud-node-text")).toHaveText("Привет");
 });

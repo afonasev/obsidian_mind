@@ -1,0 +1,21 @@
+.handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 10;
+}
+
+/* Straddle the panel's border so the 6px target is centred on the seam. */
+.edgeRight {
+  right: -3px;
+}
+
+.edgeLeft {
+  left: -3px;
+}
+
+.handle:hover {
+  background: rgba(79, 128, 255, 0.25);
+}

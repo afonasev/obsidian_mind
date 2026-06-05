@@ -1,4 +1,4 @@
-import { Handle, type Node as RFNode, type NodeProps, Position } from "@xyflow/react";
+import { Handle, type NodeProps, Position, type Node as RFNode } from "@xyflow/react";
 import {
   type ChangeEvent,
   type JSX,
@@ -84,9 +84,9 @@ function EditView({ id }: { readonly id: string }): JSX.Element {
   const text = useMindMapStore(
     (state) => state.graph.nodes.find((node) => node.id === id)?.text ?? "",
   );
-  // Capture the text at mount so Escape can restore it.
+  // Capture the text at mount so a freshly created node can be discarded if left empty.
   const initialRef = useRef(text);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Autofocus when the input mounts so the user can type immediately. The node is
   // rendered visible from the first frame (see initialWidth/initialHeight in
@@ -110,16 +110,6 @@ function EditView({ id }: { readonly id: string }): JSX.Element {
     mindMapStore.getState().stopEditing();
   }
 
-  function cancel(): void {
-    // Escape on a fresh node also discards it, matching the commit behaviour.
-    if (initialRef.current === "") {
-      mindMapStore.getState().removeSubtree(id);
-      return;
-    }
-    mindMapStore.getState().updateText(id, initialRef.current);
-    mindMapStore.getState().stopEditing();
-  }
-
   function commitAndAddChild(): void {
     // Cmd/Ctrl+Enter commits the current node, then branches a child off it and
     // edits that child — so a tree can be built without leaving the keyboard.
@@ -130,38 +120,39 @@ function EditView({ id }: { readonly id: string }): JSX.Element {
     }
   }
 
-  function onChange(event: ChangeEvent<HTMLInputElement>): void {
+  function onChange(event: ChangeEvent<HTMLTextAreaElement>): void {
     mindMapStore.getState().updateText(id, event.target.value);
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     // Stop React Flow from intercepting Delete/Enter while editing text.
     event.stopPropagation();
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       commitAndAddChild();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      commit();
     } else if (event.key === "Escape") {
       event.preventDefault();
-      cancel();
+      commit();
     }
+    // A plain Enter falls through to the textarea's default — it inserts a newline
+    // inside the label instead of committing.
   }
 
+  const lines = text.split("\n");
+
   return (
-    <input
+    <textarea
       ref={inputRef}
-      type="text"
       className={styles.input}
       value={text}
       onChange={onChange}
       onKeyDown={onKeyDown}
       onBlur={commit}
-      // Match the input's width to the current text so toggling edit mode does
-      // not jump the node from its fitted size to the HTML default (~20 chars).
-      // CSS max-width: 100% on .input still caps growth at the node's max-width.
-      size={Math.max(1, text.length)}
+      // Size the textarea to its content (longest line × line count) so toggling
+      // edit mode does not jump the node from its fitted size to the HTML default.
+      // CSS max-width: 100% still caps growth at the node's max-width.
+      cols={Math.max(1, ...lines.map((line) => line.length))}
+      rows={lines.length}
       data-testid="cloud-node-input"
       aria-label="Текст узла"
     />

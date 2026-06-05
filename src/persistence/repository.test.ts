@@ -9,13 +9,19 @@ import {
   loadActiveWorkspaceId,
   loadAllRoots,
   loadCollapsedRoots,
+  loadEditorCollapsed,
+  loadEditorWidth,
   loadGraph,
   loadPanelCollapsed,
+  loadPanelWidth,
   loadWorkspaces,
   saveActiveWorkspaceId,
   saveCollapsedRoots,
+  saveEditorCollapsed,
+  saveEditorWidth,
   saveGraph,
   savePanelCollapsed,
+  savePanelWidth,
   saveWorkspace,
 } from "./repository";
 
@@ -65,6 +71,35 @@ describe("loadGraph / saveGraph", () => {
     const loaded = await loadGraph("w1");
     expect(loaded?.nodes).toEqual(sampleGraph.nodes);
     expect(loaded?.edges).toEqual(sampleGraph.edges);
+  });
+
+  it("round-trips a node body through save and load", async () => {
+    const withBody: Graph = {
+      nodes: [
+        { id: "n1", text: "Корень", position: { x: 0, y: 0 }, parentId: null, body: "# Тело" },
+      ],
+      edges: [],
+    };
+    await saveGraph("w1", withBody);
+    expect((await loadGraph("w1"))?.nodes[0]?.body).toBe("# Тело");
+  });
+
+  it("loads an old record whose nodes have no body field (body stays empty)", async () => {
+    const db = await openMindMapDb();
+    // A record saved before bodies existed: node has no `body` key at all.
+    await db.put(
+      GRAPH_STORE,
+      {
+        version: 2,
+        nodes: [{ id: "n1", text: "Старый", position: { x: 0, y: 0 }, parentId: null }],
+        edges: [],
+        updatedAt: 0,
+      },
+      "w1",
+    );
+    db.close();
+    const loaded = await loadGraph("w1");
+    expect(loaded?.nodes[0]?.body).toBeUndefined();
   });
 
   it("keeps graphs isolated per workspace id", async () => {
@@ -223,6 +258,29 @@ describe("meta", () => {
     expect(await loadPanelCollapsed()).toBe(true);
     await savePanelCollapsed(false);
     expect(await loadPanelCollapsed()).toBe(false);
+  });
+
+  it("returns false editor-collapsed by default", async () => {
+    expect(await loadEditorCollapsed()).toBe(false);
+  });
+
+  it("reads back a saved editor-collapsed flag", async () => {
+    await saveEditorCollapsed(true);
+    expect(await loadEditorCollapsed()).toBe(true);
+    await saveEditorCollapsed(false);
+    expect(await loadEditorCollapsed()).toBe(false);
+  });
+
+  it("returns null panel/editor width by default", async () => {
+    expect(await loadPanelWidth()).toBeNull();
+    expect(await loadEditorWidth()).toBeNull();
+  });
+
+  it("round-trips the panel and editor widths", async () => {
+    await savePanelWidth(300);
+    await saveEditorWidth(420);
+    expect(await loadPanelWidth()).toBe(300);
+    expect(await loadEditorWidth()).toBe(420);
   });
 
   it("returns an empty collapsed-roots list by default", async () => {

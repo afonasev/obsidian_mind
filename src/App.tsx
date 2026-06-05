@@ -1,6 +1,7 @@
 import { type JSX, useEffect } from "react";
 import styles from "./App.module.css";
 import { Canvas } from "./components/Canvas/Canvas";
+import { EditorPanel } from "./components/EditorPanel/EditorPanel";
 import { WorkspacePanel } from "./components/WorkspacePanel/WorkspacePanel";
 import { bindUnloadFlush } from "./persistence/debounced-saver";
 import { mindMapStore } from "./store/mindmap-store";
@@ -21,6 +22,7 @@ export function App(): JSX.Element {
     <div className={styles.app}>
       <WorkspacePanel />
       <Canvas />
+      <EditorPanel />
     </div>
   );
 }

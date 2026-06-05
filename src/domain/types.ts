@@ -11,6 +11,10 @@ export interface MindNode {
   readonly text: string;
   readonly position: Position;
   readonly parentId: NodeId | null;
+  // Markdown body of the node. Absent on nodes saved before bodies existed — read
+  // back as undefined (empty body), no migration. Lives only in the EditorPanel,
+  // never on the canvas, so it does not affect layout.
+  readonly body?: string;
 }
 
 export interface MindEdge {

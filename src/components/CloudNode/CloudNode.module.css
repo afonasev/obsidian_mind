@@ -60,6 +60,12 @@
   background: transparent;
   font: inherit;
   text-align: center;
+  /* Multi-line label editor: no drag-resize, wrap like the rendered text. */
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: block;
 }
 
 .addButton {

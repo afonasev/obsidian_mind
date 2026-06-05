@@ -396,6 +396,25 @@ describe("handleCanvasKeyDown", () => {
     expect(mindMapStore.getState().graph.nodes).toHaveLength(1);
   });
 
+  it("ignores key events whose target is a focused textarea (e.g. the body editor)", () => {
+    // The right-panel body editor is a <textarea> and does NOT set editingNodeId, so
+    // only the element-type guard stops Backspace from deleting the selected node.
+    let id = "";
+    act(() => {
+      id = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "X" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().selectNode(id);
+    });
+    const textarea = document.createElement("textarea");
+    const event = {
+      key: "Backspace",
+      preventDefault: vi.fn(),
+      target: textarea,
+    } as unknown as KeyboardEvent;
+    handleCanvasKeyDown(event);
+    expect(mindMapStore.getState().graph.nodes).toHaveLength(1);
+  });
+
   it("ignores keys when nothing is selected", () => {
     handleCanvasKeyDown(fakeEvent("Delete"));
     expect(mindMapStore.getState().graph.nodes).toEqual([]);
@@ -704,7 +723,7 @@ describe("handleNodeClick / handleNodeDoubleClick", () => {
 });
 
 describe("handlePaneClick", () => {
-  it("clears selection and exits editing if active", () => {
+  it("exits editing but keeps the selection", () => {
     let id = "";
     act(() => {
       id = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "X" });
@@ -713,11 +732,11 @@ describe("handlePaneClick", () => {
     expect(mindMapStore.getState().editingNodeId).toBe(id);
 
     handlePaneClick();
-    expect(mindMapStore.getState().selectedNodeId).toBeNull();
+    expect(mindMapStore.getState().selectedNodeId).toBe(id);
     expect(mindMapStore.getState().editingNodeId).toBeNull();
   });
 
-  it("just clears selection when nothing is being edited", () => {
+  it("keeps the selection when nothing is being edited", () => {
     let id = "";
     act(() => {
       id = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "X" });
@@ -726,7 +745,7 @@ describe("handlePaneClick", () => {
     });
 
     handlePaneClick();
-    expect(mindMapStore.getState().selectedNodeId).toBeNull();
+    expect(mindMapStore.getState().selectedNodeId).toBe(id);
     expect(mindMapStore.getState().editingNodeId).toBeNull();
   });
 });

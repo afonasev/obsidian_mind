@@ -191,6 +191,11 @@ describe("estimateNodeWidth", () => {
     const text = "x".repeat(20);
     expect(estimateNodeWidth(text, true)).toBeGreaterThan(estimateNodeWidth(text, false));
   });
+
+  it("sizes a multi-line label by its longest line, not the total length", () => {
+    // "xxxxx\nxx" has 8 chars total but the longest line is 5 — width matches "xxxxx".
+    expect(estimateNodeWidth("xxxxx\nxx", false)).toBe(estimateNodeWidth("xxxxx", false));
+  });
 });
 
 describe("sideOf", () => {

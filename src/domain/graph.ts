@@ -93,6 +93,22 @@ export function updateText(graph: Graph, input: UpdateTextInput): Graph {
   };
 }
 
+interface UpdateBodyInput {
+  readonly nodeId: NodeId;
+  readonly body: string;
+}
+
+// Sets the markdown body of one node. Unlike `updateText` there is no layout
+// concern — the body never renders on the canvas, so descendants do not move.
+export function updateBody(graph: Graph, input: UpdateBodyInput): Graph {
+  return {
+    nodes: graph.nodes.map((node) =>
+      node.id === input.nodeId ? { ...node, body: input.body } : node,
+    ),
+    edges: graph.edges,
+  };
+}
+
 interface MoveNodeInput {
   readonly nodeId: NodeId;
   readonly position: Position;

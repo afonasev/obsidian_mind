@@ -1,8 +1,10 @@
 .app {
   position: absolute;
   inset: 0;
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  /* left panel | canvas | right editor — panels size to content, canvas takes
+     the rest. min-width: 0 on the center keeps the canvas from overflowing. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
   width: 100%;
   height: 100%;
 }
