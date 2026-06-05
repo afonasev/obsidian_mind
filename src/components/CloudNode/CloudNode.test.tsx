@@ -6,8 +6,9 @@ import userEvent from "@testing-library/user-event";
 import { ReactFlowProvider } from "@xyflow/react";
 import type { JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LAYOUT_HSTEP, LAYOUT_VSTEP } from "../../domain/layout";
+import { FONT_SCALE_MAX, FONT_SCALE_MIN, LAYOUT_HSTEP, LAYOUT_VSTEP } from "../../domain/layout";
 import { mindMapStore } from "../../store/mindmap-store";
+import { Canvas } from "../Canvas/Canvas";
 import { CHILD_OFFSET_X, CloudNode, type CloudNodeProps } from "./CloudNode";
 
 function withProvider(children: ReactNode): JSX.Element {
@@ -522,5 +523,95 @@ describe("CloudNode", () => {
     await user.click(screen.getByTestId(`cloud-node-add-${id}-right`));
 
     expect(mindMapStore.getState().graph.nodes).toEqual([]);
+  });
+
+  it("renders the name bold and italic when the node carries that style", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().setNodeStyle(id, { bold: true, italic: true });
+    });
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Идея" })} />));
+    const name = screen.getByTestId("cloud-node-text");
+    expect(name.className).toMatch(/bold/);
+    expect(name.className).toMatch(/italic/);
+  });
+
+  it("renders the name with an enlarged inline font size for a positive font scale", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().setNodeStyle(id, { fontScale: 2 });
+    });
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Идея" })} />));
+    expect(screen.getByTestId("cloud-node-text").style.fontSize).toMatch(/em$/);
+  });
+
+  it("renders a node without a style at the base font with no bold/italic", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Идея" })} />));
+    const name = screen.getByTestId("cloud-node-text");
+    expect(name.className).not.toMatch(/bold/);
+    expect(name.className).not.toMatch(/italic/);
+    // No inline font size at the base scale, so the node inherits its CSS size.
+    expect(name.style.fontSize).toBe("");
+  });
+});
+
+// The format toolbar lives in a React Flow NodeToolbar portal, which only renders
+// when the node is registered in the flow's node lookup — so these mount the real
+// <Canvas> (like Canvas.test) rather than a bare CloudNode.
+describe("CloudNode format toolbar", () => {
+  it("shows the toolbar while the name is being edited and hides it afterwards", () => {
+    seedRoot("Идея"); // addRoot leaves the node in editing mode
+    render(<Canvas />);
+    expect(screen.getByRole("button", { name: "Жирный" })).toBeInTheDocument();
+
+    act(() => {
+      mindMapStore.getState().stopEditing();
+    });
+    expect(screen.queryByRole("button", { name: "Жирный" })).toBeNull();
+  });
+
+  it("changes the style without leaving edit mode when a button is clicked", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    render(<Canvas />);
+
+    await user.click(screen.getByRole("button", { name: "Жирный" }));
+
+    expect(mindMapStore.getState().graph.nodes.find((n) => n.id === id)?.style?.bold).toBe(true);
+    // onMouseDown+preventDefault keeps focus on the textarea, so editing continues.
+    expect(mindMapStore.getState().editingNodeId).toBe(id);
+  });
+
+  it("reflects the current bold state as a pressed toggle", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().setNodeStyle(id, { bold: true });
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("button", { name: "Жирный" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("disables the enlarge button at the maximum font scale", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().setNodeStyle(id, { fontScale: FONT_SCALE_MAX });
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("button", { name: "Больше шрифт" })).toBeDisabled();
+  });
+
+  it("disables the shrink button at the minimum font scale", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().setNodeStyle(id, { fontScale: FONT_SCALE_MIN });
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("button", { name: "Меньше шрифт" })).toBeDisabled();
   });
 });

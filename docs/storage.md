@@ -54,6 +54,13 @@ interface MindNode {
   readonly position: Position;     // { x: number, y: number }
   readonly parentId: NodeId | null; // null для корневых
   readonly body?: string;          // markdown-тело узла; отсутствует = пустое
+  readonly style?: NodeNameStyle;  // стиль имени; отсутствует = без форматирования
+}
+
+interface NodeNameStyle {
+  readonly bold?: boolean;         // имя целиком жирным
+  readonly italic?: boolean;       // имя целиком курсивом
+  readonly fontScale?: number;     // целочисленный шаг размера в [FONT_SCALE_MIN, FONT_SCALE_MAX]
 }
 
 interface MindEdge {
@@ -71,6 +78,8 @@ interface Graph {
 `parentId` в `MindNode` дублирует информацию из `MindEdge`. Дубль сознательный: даёт `O(1)` проход «вверх» и упрощает удаление поддерева. Запись идёт целым графом одной транзакцией, так что рассинхрон полей невозможен.
 
 `body` — опциональное markdown-тело узла. Формат хранения остаётся версии `2`: записи, сохранённые до появления тел, не содержат `body` и читаются как `undefined` (тело считается пустым) — `toGraph` кастит `nodes` без проверки поле-за-полем, поэтому миграция и bump `DB_VERSION` не нужны. Рендер тела — [`frontend.md`](./frontend.md) (`EditorPanel`), выбор рендерера — [`decisions/2026-06-05_markdown-render.md`](./decisions/2026-06-05_markdown-render.md).
+
+`style` — опциональный стиль имени узла (жирность, курсив, относительный размер шрифта `fontScale`). По той же схеме, что и `body`: записи без `style` читаются как `undefined` («без форматирования»), миграция и bump `DB_VERSION` не нужны. `fontScale` хранится целым шагом (не px) и клампится в домене (`updateNodeStyle`); маппинг шага в размер и сам тулбар форматирования — [`frontend.md`](./frontend.md) (`CloudNode`).
 
 ## Операции
 

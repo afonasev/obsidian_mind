@@ -3,7 +3,7 @@ import * as graphOps from "../domain/graph";
 import { appendChildY, LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
 import type { NavEntry } from "../domain/nav-history";
 import * as navHistory from "../domain/nav-history";
-import type { Graph, NodeId, Position } from "../domain/types";
+import type { Graph, NodeId, NodeNameStyle, Position } from "../domain/types";
 import type { PanelRoot, Workspace } from "../domain/workspaces";
 import * as workspaceOps from "../domain/workspaces";
 import { createDebouncedSaver, type DebouncedSaver } from "../persistence/debounced-saver";
@@ -130,6 +130,7 @@ export interface MindMapState {
   pasteInto(parentId: NodeId): void;
   updateText(nodeId: NodeId, text: string): void;
   updateBody(nodeId: NodeId, body: string): void;
+  setNodeStyle(nodeId: NodeId, patch: NodeNameStyle): void;
   moveNode(nodeId: NodeId, position: Position): void;
   dropNode(nodeId: NodeId, position: Position): void;
   reparent(nodeId: NodeId, newParentId: NodeId): void;
@@ -797,6 +798,22 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         // re-flow. Coalesce a typing burst on one node into a single undo step,
         // separate from name edits (`text:`) and moves (`move:`).
         commit(graphOps.updateBody(get().graph, { nodeId, body }), `body:${nodeId}`);
+      },
+
+      setNodeStyle(nodeId, patch) {
+        // The name font size changes the node's width, so re-flow the tree (same
+        // layout branch as updateText) to keep neighbours from overlapping.
+        const next = relayout(graphOps.updateNodeStyle(get().graph, { nodeId, style: patch }));
+        if (nodeId === pendingNodeId) {
+          // Styling a still-pending fresh node is part of its create transaction —
+          // no separate history entry (mirrors updateText).
+          set({ graph: next });
+          return;
+        }
+        commit(next, `style:${nodeId}`);
+        // Each style change is its own undo step: clicks are discrete and rare, so
+        // close the coalescing window (a following click must not merge into this).
+        coalesceKey = null;
       },
 
       moveNode(nodeId, position) {

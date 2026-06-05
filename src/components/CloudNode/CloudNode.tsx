@@ -1,14 +1,22 @@
-import { Handle, type NodeProps, Position, type Node as RFNode } from "@xyflow/react";
+import { Handle, type NodeProps, NodeToolbar, Position, type Node as RFNode } from "@xyflow/react";
 import {
   type ChangeEvent,
+  type CSSProperties,
   type JSX,
   type KeyboardEvent,
   type MouseEvent,
   useEffect,
   useRef,
 } from "react";
-import { LAYOUT_HSTEP, sideOf } from "../../domain/layout";
-import type { MindNode } from "../../domain/types";
+import {
+  FONT_SCALE_BASE,
+  FONT_SCALE_MAX,
+  FONT_SCALE_MIN,
+  fontScaleFactor,
+  LAYOUT_HSTEP,
+  sideOf,
+} from "../../domain/layout";
+import type { MindNode, NodeNameStyle } from "../../domain/types";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
 import styles from "./CloudNode.module.css";
 
@@ -42,6 +50,17 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
   // Primitive selectors keep zustand referential equality stable (no derived objects).
   const hasChildren = useMindMapStore((state) => state.graph.nodes.some((n) => n.parentId === id));
   const isCollapsed = useMindMapStore((state) => state.collapsedNodeIds.has(id));
+  // Name styling — primitive selectors keep zustand referential equality stable
+  // (returning the `style` object directly would create a new reference each render).
+  const bold = useMindMapStore(
+    (state) => state.graph.nodes.find((n) => n.id === id)?.style?.bold ?? false,
+  );
+  const italic = useMindMapStore(
+    (state) => state.graph.nodes.find((n) => n.id === id)?.style?.italic ?? false,
+  );
+  const fontScale = useMindMapStore(
+    (state) => state.graph.nodes.find((n) => n.id === id)?.style?.fontScale ?? FONT_SCALE_BASE,
+  );
   const showLeft = isRoot || side === "left";
   const showRight = isRoot || side === "right";
   // A root collapses both sides with a single toggle; a non-root toggles on its outward side.
@@ -64,7 +83,18 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
     >
       <Handle id="target-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="target-right" type="target" position={Position.Right} isConnectable={false} />
-      {isEditing ? <EditView id={id} /> : <TextView text={data.text} />}
+      <FormatToolbar
+        id={id}
+        isEditing={isEditing}
+        bold={bold}
+        italic={italic}
+        fontScale={fontScale}
+      />
+      {isEditing ? (
+        <EditView id={id} bold={bold} italic={italic} fontScale={fontScale} />
+      ) : (
+        <TextView text={data.text} bold={bold} italic={italic} fontScale={fontScale} />
+      )}
       {showLeft ? <AddChildButton parentId={id} direction="left" /> : null}
       {showRight ? <AddChildButton parentId={id} direction="right" /> : null}
       {hasChildren ? (
@@ -76,22 +106,54 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
   );
 }
 
-function TextView({ text }: { readonly text: string }): JSX.Element {
-  if (text === "") {
-    return (
-      <span className={`${styles.text} ${styles.placeholder}`} data-testid="cloud-node-text">
-        Без названия
-      </span>
-    );
-  }
+interface NameStyleProps {
+  readonly bold: boolean;
+  readonly italic: boolean;
+  readonly fontScale: number;
+}
+
+/** Bold/italic class string for a styled name (empty when neither is set). */
+function nameClassName(bold: boolean, italic: boolean): string {
+  return [bold ? styles.bold : "", italic ? styles.italic : ""].filter(Boolean).join(" ");
+}
+
+/**
+ * Inline font size for a relative scale step. Inline (not a class) because the
+ * value is dynamic and relative to the node's base size via `em`; undefined at the
+ * base scale so root/non-root inherit their CSS font size untouched.
+ */
+function nameFontStyle(fontScale: number): CSSProperties | undefined {
+  return fontScale === FONT_SCALE_BASE
+    ? undefined
+    : { fontSize: `${fontScaleFactor(fontScale)}em` };
+}
+
+function TextView({
+  text,
+  bold,
+  italic,
+  fontScale,
+}: { readonly text: string } & NameStyleProps): JSX.Element {
+  const className = [
+    styles.text,
+    nameClassName(bold, italic),
+    text === "" ? styles.placeholder : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <span className={styles.text} data-testid="cloud-node-text">
-      {text}
+    <span className={className} style={nameFontStyle(fontScale)} data-testid="cloud-node-text">
+      {text === "" ? "Без названия" : text}
     </span>
   );
 }
 
-function EditView({ id }: { readonly id: string }): JSX.Element {
+function EditView({
+  id,
+  bold,
+  italic,
+  fontScale,
+}: { readonly id: string } & NameStyleProps): JSX.Element {
   // Read the live text from the store so each keystroke flows through
   // `updateText` → layout → render, keeping descendants re-aligned in real time.
   const text = useMindMapStore(
@@ -156,7 +218,8 @@ function EditView({ id }: { readonly id: string }): JSX.Element {
   return (
     <textarea
       ref={inputRef}
-      className={styles.input}
+      className={[styles.input, nameClassName(bold, italic)].filter(Boolean).join(" ")}
+      style={nameFontStyle(fontScale)}
       value={text}
       onChange={onChange}
       onKeyDown={onKeyDown}
@@ -169,6 +232,75 @@ function EditView({ id }: { readonly id: string }): JSX.Element {
       data-testid="cloud-node-input"
       aria-label="Текст узла"
     />
+  );
+}
+
+function FormatToolbar({
+  id,
+  isEditing,
+  bold,
+  italic,
+  fontScale,
+}: { readonly id: string; readonly isEditing: boolean } & NameStyleProps): JSX.Element {
+  // onMouseDown + preventDefault (not onClick): a plain click would move focus off
+  // the textarea, firing its onBlur → commit and dropping out of name editing.
+  // Preventing the default keeps focus where it is, so styling stays in edit mode.
+  // stopPropagation keeps the mousedown from reaching React Flow's pan/zoom handler
+  // (a toolbar click must not start a canvas drag).
+  function apply(patch: NodeNameStyle): (event: MouseEvent<HTMLButtonElement>) => void {
+    return (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      mindMapStore.getState().setNodeStyle(id, patch);
+    };
+  }
+
+  return (
+    <NodeToolbar
+      nodeId={id}
+      isVisible={isEditing}
+      position={Position.Top}
+      // `nopan` keeps React Flow's d3-zoom from treating a toolbar mousedown as a
+      // canvas pan (its filter ignores nopan-wrapped targets).
+      className={`${styles.toolbar} nopan`}
+    >
+      <button
+        type="button"
+        className={`${styles.toolbarButton} ${bold ? styles.toolbarActive : ""}`}
+        aria-label="Жирный"
+        aria-pressed={bold}
+        onMouseDown={apply({ bold: !bold })}
+      >
+        B
+      </button>
+      <button
+        type="button"
+        className={`${styles.toolbarButton} ${italic ? styles.toolbarActive : ""}`}
+        aria-label="Курсив"
+        aria-pressed={italic}
+        onMouseDown={apply({ italic: !italic })}
+      >
+        I
+      </button>
+      <button
+        type="button"
+        className={styles.toolbarButton}
+        aria-label="Меньше шрифт"
+        disabled={fontScale <= FONT_SCALE_MIN}
+        onMouseDown={apply({ fontScale: fontScale - 1 })}
+      >
+        A−
+      </button>
+      <button
+        type="button"
+        className={styles.toolbarButton}
+        aria-label="Больше шрифт"
+        disabled={fontScale >= FONT_SCALE_MAX}
+        onMouseDown={apply({ fontScale: fontScale + 1 })}
+      >
+        A+
+      </button>
+    </NodeToolbar>
   );
 }
 

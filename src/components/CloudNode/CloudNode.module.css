@@ -75,6 +75,55 @@
   color: #98a2b3;
 }
 
+/* Name styling applied to the whole node name in both view and edit modes. */
+.bold {
+  font-weight: 700;
+}
+
+.italic {
+  font-style: italic;
+}
+
+/* Floating format toolbar shown above the node while its name is being edited.
+   NodeToolbar positions the wrapper; these rules style the button row inside it. */
+.toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.toolbarButton {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #475467;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toolbarButton:hover:not(:disabled) {
+  background: #f2f4f7;
+}
+
+.toolbarButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* B / I reflect the node's current style: an active toggle reads as pressed. */
+.toolbarActive {
+  border-color: #4f80ff;
+  background: #e7eefc;
+  color: #1d3a8a;
+}
+
 .input {
   width: auto;
   max-width: 100%;
@@ -82,8 +131,18 @@
   border: none;
   outline: none;
   background: transparent;
-  font: inherit;
+  /* Inherit font via longhands, not the `font` shorthand: the shorthand resets
+     font-weight/font-style and would override the .bold/.italic name classes, so
+     bold/italic would not show while editing. Weight/style fall through to the
+     .bold/.italic classes (or the inherited node default). */
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
   text-align: center;
+  /* The textarea is sized to its content via cols (so the node grows as you type);
+     auto side-margins keep that content-width box centered in the node — matching
+     the centered TextView span — instead of pinning it to the left edge. */
+  margin: 0 auto;
   /* Multi-line label editor: no drag-resize, wrap like the rendered text. */
   resize: none;
   overflow: hidden;

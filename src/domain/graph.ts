@@ -1,4 +1,5 @@
-import type { EdgeId, Graph, MindEdge, MindNode, NodeId, Position } from "./types";
+import { FONT_SCALE_MAX, FONT_SCALE_MIN } from "./layout";
+import type { EdgeId, Graph, MindEdge, MindNode, NodeId, NodeNameStyle, Position } from "./types";
 
 export function createEmpty(): Graph {
   return { nodes: [], edges: [] };
@@ -105,6 +106,37 @@ export function updateBody(graph: Graph, input: UpdateBodyInput): Graph {
     nodes: graph.nodes.map((node) =>
       node.id === input.nodeId ? { ...node, body: input.body } : node,
     ),
+    edges: graph.edges,
+  };
+}
+
+interface UpdateNodeStyleInput {
+  readonly nodeId: NodeId;
+  // A partial patch merged onto the node's current style; absent keys are kept.
+  readonly style: NodeNameStyle;
+}
+
+/**
+ * Merge a style patch onto one node's name style. `fontScale` is clamped to the
+ * [FONT_SCALE_MIN, FONT_SCALE_MAX] range here so the range invariant lives in one
+ * place. No layout concern in the domain — the store re-flows after the mutation.
+ */
+export function updateNodeStyle(graph: Graph, input: UpdateNodeStyleInput): Graph {
+  return {
+    nodes: graph.nodes.map((node) => {
+      if (node.id !== input.nodeId) {
+        return node;
+      }
+      const merged: NodeNameStyle = { ...node.style, ...input.style };
+      const style =
+        merged.fontScale === undefined
+          ? merged
+          : {
+              ...merged,
+              fontScale: Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, merged.fontScale)),
+            };
+      return { ...node, style };
+    }),
     edges: graph.edges,
   };
 }

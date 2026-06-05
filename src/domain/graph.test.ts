@@ -10,8 +10,10 @@ import {
   reparentSubtree,
   type Subtree,
   updateBody,
+  updateNodeStyle,
   updateText,
 } from "./graph";
+import { FONT_SCALE_MAX, FONT_SCALE_MIN } from "./layout";
 import type { Graph, NodeId } from "./types";
 
 describe("createEmpty", () => {
@@ -204,6 +206,76 @@ describe("updateBody", () => {
   it("is a no-op for an unknown node id", () => {
     const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
     const after = updateBody(root.graph, { nodeId: "missing" as NodeId, body: "x" });
+    expect(after.nodes).toEqual(root.graph.nodes);
+    expect(after.edges).toEqual(root.graph.edges);
+  });
+});
+
+describe("updateNodeStyle", () => {
+  it("applies bold and italic to the targeted node only", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "root" });
+    const child = addChild(root.graph, {
+      parentId: root.nodeId,
+      position: { x: 200, y: 50 },
+      text: "child",
+    });
+    const after = updateNodeStyle(child.graph, {
+      nodeId: root.nodeId,
+      style: { bold: true, italic: true },
+    });
+    expect(after.nodes.find((node) => node.id === root.nodeId)?.style).toEqual({
+      bold: true,
+      italic: true,
+    });
+    expect(after.nodes.find((node) => node.id === child.nodeId)?.style).toBeUndefined();
+  });
+
+  it("merges a patch onto the existing style without dropping prior fields", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "root" });
+    const bold = updateNodeStyle(root.graph, { nodeId: root.nodeId, style: { bold: true } });
+    const after = updateNodeStyle(bold, { nodeId: root.nodeId, style: { italic: true } });
+    expect(after.nodes.find((node) => node.id === root.nodeId)?.style).toEqual({
+      bold: true,
+      italic: true,
+    });
+  });
+
+  it("clamps fontScale to the maximum of the range", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "root" });
+    const after = updateNodeStyle(root.graph, {
+      nodeId: root.nodeId,
+      style: { fontScale: FONT_SCALE_MAX + 5 },
+    });
+    expect(after.nodes.find((node) => node.id === root.nodeId)?.style?.fontScale).toBe(
+      FONT_SCALE_MAX,
+    );
+  });
+
+  it("clamps fontScale to the minimum of the range", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "root" });
+    const after = updateNodeStyle(root.graph, {
+      nodeId: root.nodeId,
+      style: { fontScale: FONT_SCALE_MIN - 5 },
+    });
+    expect(after.nodes.find((node) => node.id === root.nodeId)?.style?.fontScale).toBe(
+      FONT_SCALE_MIN,
+    );
+  });
+
+  it("leaves a node without a fontScale patch as plain merged style", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "root" });
+    const after = updateNodeStyle(root.graph, { nodeId: root.nodeId, style: { bold: true } });
+    const style = after.nodes.find((node) => node.id === root.nodeId)?.style;
+    expect(style).toEqual({ bold: true });
+    expect(style?.fontScale).toBeUndefined();
+  });
+
+  it("is a no-op for an unknown node id", () => {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 } });
+    const after = updateNodeStyle(root.graph, {
+      nodeId: "missing" as NodeId,
+      style: { bold: true },
+    });
     expect(after.nodes).toEqual(root.graph.nodes);
     expect(after.edges).toEqual(root.graph.edges);
   });

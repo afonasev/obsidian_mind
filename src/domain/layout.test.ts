@@ -254,6 +254,14 @@ describe("estimateNodeWidth", () => {
     // "xxxxx\nxx" has 8 chars total but the longest line is 5 — width matches "xxxxx".
     expect(estimateNodeWidth("xxxxx\nxx", false)).toBe(estimateNodeWidth("xxxxx", false));
   });
+
+  it("widens the node as the font scale grows and narrows as it shrinks", () => {
+    // Long enough that the base width sits above the min clamp, so the shrink shows.
+    const text = "x".repeat(30);
+    const base = estimateNodeWidth(text, false);
+    expect(estimateNodeWidth(text, false, 2)).toBeGreaterThan(base);
+    expect(estimateNodeWidth(text, false, -2)).toBeLessThan(base);
+  });
 });
 
 describe("sideOf", () => {

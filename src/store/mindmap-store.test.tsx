@@ -265,6 +265,64 @@ describe("updateText / moveNode", () => {
   });
 });
 
+describe("setNodeStyle", () => {
+  it("re-lays out the tree when the name font size grows", () => {
+    const store = activeStore();
+    const rootId = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "x".repeat(20) });
+    const childId = store.getState().addChild({ parentId: rootId, position: { x: 100, y: 0 } });
+    store.getState().stopEditing();
+    const beforeX = store.getState().graph.nodes.find((n) => n.id === childId)?.position.x ?? 0;
+
+    store.getState().setNodeStyle(rootId, { fontScale: 3 });
+
+    const afterX = store.getState().graph.nodes.find((n) => n.id === childId)?.position.x ?? 0;
+    // A wider root pushes its right-side child further out.
+    expect(afterX).toBeGreaterThan(beforeX);
+  });
+
+  it("makes each style change its own undo step that restores the prior style", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "Идея" });
+    store.getState().stopEditing();
+
+    store.getState().setNodeStyle(id, { bold: true });
+    store.getState().undo();
+
+    expect(store.getState().graph.nodes.find((n) => n.id === id)?.style?.bold).toBeUndefined();
+  });
+
+  it("does not coalesce a style change with a preceding text edit", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "old" });
+    store.getState().stopEditing();
+
+    store.getState().updateText(id, "new");
+    store.getState().setNodeStyle(id, { bold: true });
+    // One undo peels off only the style, leaving the text edit intact ⇒ separate steps.
+    store.getState().undo();
+
+    const node = store.getState().graph.nodes.find((n) => n.id === id);
+    expect(node?.text).toBe("new");
+    expect(node?.style?.bold).toBeUndefined();
+  });
+
+  it("persists the style change through the autosave flush", async () => {
+    const { store, persistence } = makeStore();
+    store.setState({
+      activeWorkspaceId: "ws",
+      workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
+    });
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "Идея" });
+    store.getState().stopEditing();
+
+    store.getState().setNodeStyle(id, { bold: true });
+    await store.getState().flush();
+
+    const saved = await persistence.loadGraph("ws");
+    expect(saved?.nodes.find((n) => n.id === id)?.style?.bold).toBe(true);
+  });
+});
+
 describe("selection and editing", () => {
   it("selectNode sets the current selection", () => {
     const store = activeStore();

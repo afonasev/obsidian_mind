@@ -11,6 +11,20 @@ export const LAYOUT_VSTEP = 80;
 // from each node's estimated width and the gap.
 export const LAYOUT_HSTEP = LAYOUT_MIN_WIDTH + LAYOUT_HGAP;
 
+// Relative font-size steps for a node name. `fontScale` is stored as an integer in
+// [FONT_SCALE_MIN, FONT_SCALE_MAX]; FONT_SCALE_BASE (0) means the node's base size.
+// Each step multiplies the rendered font size — and thus the estimated node width —
+// by FONT_SCALE_STEP, so a larger name widens its node and the layout reflows.
+export const FONT_SCALE_MIN = -2;
+export const FONT_SCALE_MAX = 6;
+export const FONT_SCALE_BASE = 0;
+export const FONT_SCALE_STEP = 0.45;
+
+/** The font-size multiplier for a given relative scale step (1 at the base). */
+export function fontScaleFactor(fontScale: number): number {
+  return 1 + fontScale * FONT_SCALE_STEP;
+}
+
 // Approximate font-metric constants — see estimateNodeWidth.
 const NON_ROOT_CHAR_WIDTH = 8;
 const ROOT_CHAR_WIDTH = 13;
@@ -22,8 +36,14 @@ const NODE_BORDER = 4; // 2px border on each side
  * the CSS enforces. The font advance is approximated per character because we
  * cannot measure the real DOM during a pure-function layout pass.
  */
-export function estimateNodeWidth(text: string, isRoot: boolean): number {
-  const charWidth = isRoot ? ROOT_CHAR_WIDTH : NON_ROOT_CHAR_WIDTH;
+export function estimateNodeWidth(
+  text: string,
+  isRoot: boolean,
+  fontScale: number = FONT_SCALE_BASE,
+): number {
+  // A larger name font widens the glyphs proportionally, so the layout must widen
+  // the node to match (FONT_SCALE_BASE keeps the original width unchanged).
+  const charWidth = (isRoot ? ROOT_CHAR_WIDTH : NON_ROOT_CHAR_WIDTH) * fontScaleFactor(fontScale);
   // Multi-line labels are as wide as their longest line, not the total length.
   const longestLine = text.split("\n").reduce((max, line) => Math.max(max, line.length), 0);
   const raw = longestLine * charWidth + NODE_HORIZONTAL_PADDING + NODE_BORDER;
@@ -76,7 +96,7 @@ export function layout(graph: Graph, collapsed: ReadonlySet<NodeId>): Graph {
     if (collapsed.has(root.id)) {
       continue;
     }
-    const rootWidth = estimateNodeWidth(root.text, true);
+    const rootWidth = estimateNodeWidth(root.text, true, root.style?.fontScale);
     const direct = childrenOf.get(root.id) ?? [];
     const right = direct.filter((child) => child.position.x >= root.position.x);
     const left = direct.filter((child) => child.position.x < root.position.x);
@@ -152,7 +172,7 @@ function layoutSide(
   const ordered = [...children].sort((a, b) => a.position.y - b.position.y);
   const items = ordered.map((child) => ({
     child,
-    width: estimateNodeWidth(child.text, false),
+    width: estimateNodeWidth(child.text, false, child.style?.fontScale),
     rows: subtreeRows(child.id, childrenOf, collapsed),
   }));
   const totalRows = items.reduce((sum, item) => sum + item.rows, 0);
