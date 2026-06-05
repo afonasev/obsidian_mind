@@ -18,6 +18,9 @@ export type ChildDirection = "left" | "right";
 
 export interface CloudNodeData extends Record<string, unknown> {
   readonly text: string;
+  // Whether the node has a non-empty markdown body; drives the inner "double border"
+  // indicator. Carried as a flag (not the body itself) — the canvas never needs the text.
+  readonly hasBody: boolean;
 }
 
 export type CloudNodeType = RFNode<CloudNodeData, "cloud">;
@@ -53,6 +56,7 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
         isEditing ? styles.editing : "",
         isDropTarget ? styles.dropTarget : "",
         isCollapsed ? styles.collapsed : "",
+        data.hasBody ? styles.hasBody : "",
       ]
         .filter(Boolean)
         .join(" ")}

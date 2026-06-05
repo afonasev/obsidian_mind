@@ -40,11 +40,15 @@ afterEach(() => {
   resetStore();
 });
 
-function makeProps(input: { readonly id: string; readonly text: string }): CloudNodeProps {
+function makeProps(input: {
+  readonly id: string;
+  readonly text: string;
+  readonly hasBody?: boolean;
+}): CloudNodeProps {
   return {
     id: input.id,
     type: "cloud",
-    data: { text: input.text },
+    data: { text: input.text, hasBody: input.hasBody ?? false },
     selected: false,
     dragging: false,
     draggable: true,
@@ -469,6 +473,39 @@ describe("CloudNode", () => {
     });
     render(withProvider(<CloudNode {...makeProps({ id: rootId, text: "R" })} />));
     expect(screen.getByTestId(`cloud-node-${rootId}`).className).toMatch(/collapsed/);
+  });
+
+  it("keeps both collapsed and selected styles on a selected collapsed node", () => {
+    let rootId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().addChild({ parentId: rootId, position: { x: 10, y: 0 }, text: "C" });
+      mindMapStore.getState().stopEditing();
+      mindMapStore.getState().toggleCollapse(rootId);
+      mindMapStore.getState().selectNode(rootId);
+    });
+    render(withProvider(<CloudNode {...makeProps({ id: rootId, text: "R" })} />));
+    const className = screen.getByTestId(`cloud-node-${rootId}`).className;
+    expect(className).toMatch(/collapsed/);
+    expect(className).toMatch(/selected/);
+  });
+
+  it("marks a node with a body via the hasBody style", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Идея", hasBody: true })} />));
+    expect(screen.getByTestId(`cloud-node-${id}`).className).toMatch(/hasBody/);
+  });
+
+  it("does not mark a node without a body", () => {
+    const id = seedRoot("Идея");
+    act(() => {
+      mindMapStore.getState().stopEditing();
+    });
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Идея", hasBody: false })} />));
+    expect(screen.getByTestId(`cloud-node-${id}`).className).not.toMatch(/hasBody/);
   });
 
   it("does not crash when the + button is clicked for a node that vanished from the store", async () => {

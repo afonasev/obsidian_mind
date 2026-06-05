@@ -49,6 +49,23 @@
   border-style: dashed;
 }
 
+/* A selected collapsed node must show selection too. `.collapsed` and `.selected`
+   have equal specificity and `.collapsed` wins by source order, so a two-class
+   selector is needed to recolor the border to the accent while keeping it dashed. */
+.collapsed.selected {
+  border-color: #4f80ff;
+}
+
+/* A node with a non-empty body reads via a bluish-tinted drop shadow instead of a
+   second border. Declared after .node / .node:hover so it overrides their shadow. */
+.hasBody {
+  box-shadow: 0 4px 14px rgba(79, 128, 255, 0.75);
+}
+
+.hasBody:hover {
+  box-shadow: 0 6px 20px rgba(79, 128, 255, 0.85);
+}
+
 .text {
   display: block;
   min-height: 1.4em;

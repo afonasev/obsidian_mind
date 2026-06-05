@@ -67,7 +67,7 @@ function makeRFNode(id: string): CloudNodeType {
     id,
     type: "cloud",
     position: { x: 0, y: 0 },
-    data: { text: "" },
+    data: { text: "", hasBody: false },
   };
 }
 
@@ -930,7 +930,7 @@ describe("findDropTarget", () => {
 
 describe("handleNodeDrag / handleNodeDragStop", () => {
   function rfNodeAt(id: string, x: number, y: number): CloudNodeType {
-    return { id, type: "cloud", position: { x, y }, data: { text: "" } };
+    return { id, type: "cloud", position: { x, y }, data: { text: "", hasBody: false } };
   }
 
   it("handleNodeDrag highlights the node under the dragged node's centre", () => {
@@ -1007,6 +1007,23 @@ describe("toRFNodes", () => {
     const child = nodes.find((n) => n.id === "c");
     expect(child?.selected).toBe(true);
     expect(child?.initialHeight).toBe(44);
+  });
+
+  it("flags hasBody only for nodes whose body is non-empty after trimming", () => {
+    const withBodies: Graph = {
+      nodes: [
+        { id: "none", text: "N", position: { x: 0, y: 0 }, parentId: null },
+        { id: "blank", text: "B", position: { x: 1, y: 0 }, parentId: "none", body: "   \n" },
+        { id: "text", text: "T", position: { x: 2, y: 0 }, parentId: "none", body: "заметка" },
+      ],
+      edges: [],
+    };
+    const flags = new Map(
+      toRFNodes(withBodies, null, new Set()).map((n) => [n.id, n.data.hasBody]),
+    );
+    expect(flags.get("none")).toBe(false);
+    expect(flags.get("blank")).toBe(false);
+    expect(flags.get("text")).toBe(true);
   });
 });
 

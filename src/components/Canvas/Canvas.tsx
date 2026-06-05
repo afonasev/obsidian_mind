@@ -422,7 +422,7 @@ export function toRFNodes(
         id: node.id,
         type: "cloud",
         position: { x: node.position.x, y: node.position.y },
-        data: { text: node.text },
+        data: { text: node.text, hasBody: (node.body ?? "").trim() !== "" },
         selected: node.id === selectedNodeId,
         // Render the node visible from frame one. Without an initial size React Flow
         // keeps a fresh node `visibility:hidden` until it measures it, and focusing a
