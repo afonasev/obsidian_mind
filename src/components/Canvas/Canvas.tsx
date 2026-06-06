@@ -14,12 +14,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { type JSX, type MouseEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { subtreeIds } from "../../domain/graph";
-import {
-  estimateNodeHeight,
-  estimateNodeWidth,
-  LAYOUT_HSTEP,
-  LAYOUT_VSTEP,
-} from "../../domain/layout";
+import { estimateNodeHeight, estimateNodeWidth } from "../../domain/layout";
 import { findNeighbor, type NavigationDirection } from "../../domain/navigation";
 import type { Graph, MindEdge, MindNode, NodeId, Position } from "../../domain/types";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
@@ -371,7 +366,7 @@ export function handleCanvasKeyDown(event: KeyboardEvent): void {
     if (event.metaKey || event.ctrlKey) {
       state.addChildOf(id);
     } else {
-      createSiblingOf(state, id);
+      state.addSiblingOf(id);
     }
   } else if (event.key === "F2") {
     event.preventDefault();
@@ -379,33 +374,6 @@ export function handleCanvasKeyDown(event: KeyboardEvent): void {
   } else if (event.key === "Escape") {
     state.selectNode(null);
   }
-}
-
-function createSiblingOf(state: ReturnType<typeof mindMapStore.getState>, id: NodeId): void {
-  const node = state.graph.nodes.find((n) => n.id === id);
-  if (node === undefined) {
-    return;
-  }
-  if (node.parentId === null) {
-    // A root has no sibling level — Enter does nothing on it. Children of a root
-    // are created via Shift+Enter or the «+» button.
-    return;
-  }
-  const parent = state.graph.nodes.find((n) => n.id === node.parentId);
-  if (parent === undefined) {
-    return;
-  }
-  const dx = node.position.x >= parent.position.x ? 1 : -1;
-  state.addChild({
-    parentId: node.parentId,
-    // y just below the current node: the layout orders siblings by y, and adjacent
-    // siblings are always ≥ LAYOUT_VSTEP apart, so half a step lands the new node
-    // directly after the current one rather than at the bottom of the level.
-    position: {
-      x: parent.position.x + dx * LAYOUT_HSTEP,
-      y: node.position.y + LAYOUT_VSTEP / 2,
-    },
-  });
 }
 
 function arrowDirection(key: string): NavigationDirection | null {

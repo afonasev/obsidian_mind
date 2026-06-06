@@ -245,13 +245,13 @@ function EditView({
     mindMapStore.getState().stopEditing();
   }
 
-  function commitAndAddChild(): void {
-    // Cmd/Ctrl+Enter commits the current node, then branches a child off it and
-    // edits that child — so a tree can be built without leaving the keyboard.
+  function commitThen(grow: (nodeId: string) => void): void {
+    // Commit the current node, then branch off it (sibling on Enter, child on
+    // Cmd/Ctrl+Enter) and edit the new node — a tree built without leaving the keyboard.
     commit();
     // commit() discards an empty fresh node; only branch off a node that survived.
     if (mindMapStore.getState().graph.nodes.some((n) => n.id === id)) {
-      mindMapStore.getState().addChildOf(id);
+      grow(id);
     }
   }
 
@@ -262,15 +262,19 @@ function EditView({
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     // Stop React Flow from intercepting Delete/Enter while editing text.
     event.stopPropagation();
+    const store = mindMapStore.getState();
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      commitAndAddChild();
+      commitThen(store.addChildOf);
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      commitThen(store.addSiblingOf);
     } else if (event.key === "Escape") {
       event.preventDefault();
       commit();
     }
-    // A plain Enter falls through to the textarea's default — it inserts a newline
-    // inside the label instead of committing.
+    // Shift+Enter falls through to the textarea's default — it inserts a newline
+    // inside the label. Multi-line names are the exception, hence the modifier.
   }
 
   const lines = text.split("\n");

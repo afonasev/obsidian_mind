@@ -1,6 +1,6 @@
 import { createStore, type StoreApi, useStore } from "zustand";
 import * as graphOps from "../domain/graph";
-import { appendChildY, LAYOUT_HSTEP, layout, sideOf } from "../domain/layout";
+import { appendChildY, LAYOUT_HSTEP, LAYOUT_VSTEP, layout, sideOf } from "../domain/layout";
 import type { NavEntry } from "../domain/nav-history";
 import * as navHistory from "../domain/nav-history";
 import type { Graph, NodeId, NodeNameStyle, Position } from "../domain/types";
@@ -124,6 +124,7 @@ export interface MindMapState {
     readonly text?: string;
   }): NodeId;
   addChildOf(nodeId: NodeId): void;
+  addSiblingOf(nodeId: NodeId): void;
   removeSubtree(nodeId: NodeId): void;
   copyNode(nodeId: NodeId): void;
   cutNode(nodeId: NodeId): void;
@@ -710,6 +711,31 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           persistCollapsed(next);
         }
         get().addChild({ parentId: nodeId, position });
+      },
+
+      addSiblingOf(nodeId) {
+        // Create a sibling right after `nodeId` and start editing it. A root has no
+        // sibling level, so nothing happens — its children come via addChildOf / «+».
+        const graph = get().graph;
+        const node = graph.nodes.find((n) => n.id === nodeId);
+        if (node === undefined || node.parentId === null) {
+          return;
+        }
+        const parent = graph.nodes.find((n) => n.id === node.parentId);
+        if (parent === undefined) {
+          return;
+        }
+        const dx = node.position.x >= parent.position.x ? 1 : -1;
+        get().addChild({
+          parentId: node.parentId,
+          // y just below the current node: the layout orders siblings by y, and adjacent
+          // siblings are always ≥ LAYOUT_VSTEP apart, so half a step lands the new node
+          // directly after the current one rather than at the bottom of the level.
+          position: {
+            x: parent.position.x + dx * LAYOUT_HSTEP,
+            y: node.position.y + LAYOUT_VSTEP / 2,
+          },
+        });
       },
 
       removeSubtree(nodeId) {

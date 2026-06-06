@@ -99,14 +99,14 @@ describe("CloudNode", () => {
     expect(input).toHaveValue("Идея");
   });
 
-  it("inserts a newline on Enter and stays in edit mode", async () => {
+  it("inserts a newline on Shift+Enter and stays in edit mode", async () => {
     const user = userEvent.setup();
     const id = seedRoot("Старый");
     render(withProvider(<CloudNode {...makeProps({ id, text: "Старый" })} />));
 
     const input = screen.getByTestId("cloud-node-input");
     await user.clear(input);
-    await user.type(input, "Первая{Enter}Вторая");
+    await user.type(input, "Первая{Shift>}{Enter}{/Shift}Вторая");
 
     expect(mindMapStore.getState().graph.nodes[0]?.text).toBe("Первая\nВторая");
     expect(mindMapStore.getState().editingNodeId).toBe(id);
@@ -125,6 +125,28 @@ describe("CloudNode", () => {
     expect(mindMapStore.getState().editingNodeId).toBeNull();
   });
 
+  it("commits the node and starts a sibling in editing on Enter", async () => {
+    const user = userEvent.setup();
+    const rootId = seedRoot("Корень");
+    // Enter creates a sibling, so the edited node must have a parent (a root has no
+    // sibling level). Seed a child and edit that.
+    let childId = "";
+    act(() => {
+      mindMapStore.getState().addChildOf(rootId);
+      childId = mindMapStore.getState().editingNodeId ?? "";
+      mindMapStore.getState().updateText(childId, "Ребёнок");
+    });
+    render(withProvider(<CloudNode {...makeProps({ id: childId, text: "Ребёнок" })} />));
+
+    await user.type(screen.getByTestId("cloud-node-input"), "{Enter}");
+
+    const state = mindMapStore.getState();
+    expect(state.graph.nodes.find((n) => n.id === childId)?.text).toBe("Ребёнок");
+    const sibling = state.graph.nodes.find((n) => n.parentId === rootId && n.id !== childId);
+    expect(sibling).toBeDefined();
+    expect(state.editingNodeId).toBe(sibling?.id);
+  });
+
   it("commits the node and starts a child in editing on Cmd+Enter", async () => {
     const user = userEvent.setup();
     const id = seedRoot("Идея");
@@ -139,12 +161,24 @@ describe("CloudNode", () => {
     expect(state.editingNodeId).toBe(child?.id);
   });
 
-  it("discards an empty fresh node on Cmd+Enter without creating a child", async () => {
+  it("commits the edited root without creating anything on Enter", async () => {
+    const user = userEvent.setup();
+    const id = seedRoot("Идея");
+    render(withProvider(<CloudNode {...makeProps({ id, text: "Идея" })} />));
+
+    await user.type(screen.getByTestId("cloud-node-input"), "{Enter}");
+
+    const state = mindMapStore.getState();
+    expect(state.graph.nodes).toHaveLength(1);
+    expect(state.editingNodeId).toBeNull();
+  });
+
+  it("discards an empty fresh node on Enter without creating a sibling", async () => {
     const user = userEvent.setup();
     const id = seedRoot("");
     render(withProvider(<CloudNode {...makeProps({ id, text: "" })} />));
 
-    await user.type(screen.getByTestId("cloud-node-input"), "{Control>}{Enter}{/Control}");
+    await user.type(screen.getByTestId("cloud-node-input"), "{Enter}");
 
     expect(mindMapStore.getState().graph.nodes).toHaveLength(0);
   });

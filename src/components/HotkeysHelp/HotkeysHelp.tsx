@@ -16,6 +16,7 @@ const HOTKEYS: readonly Hotkey[] = [
   { keys: "Двойной клик / F2", description: "Редактировать текст узла" },
   { keys: "Enter", description: "Создать соседний узел (на корне — ничего)" },
   { keys: "Cmd/Ctrl + Enter", description: "Создать дочерний узел от текущего" },
+  { keys: "Shift + Enter", description: "Перенос строки в названии при редактировании" },
   { keys: "«+» на узле", description: "Добавить дочерний узел" },
   { keys: "Перетаскивание", description: "Двигать узел; менять порядок и сторону веток" },
   { keys: "Перетащить на узел", description: "Сделать перетаскиваемый узел дочерним" },
