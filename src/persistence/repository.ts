@@ -8,6 +8,7 @@ import {
   META_COLLAPSED_ROOTS_KEY,
   META_EDITOR_COLLAPSED_KEY,
   META_EDITOR_WIDTH_KEY,
+  META_LAST_VAULT_PATH_KEY,
   META_PANEL_COLLAPSED_KEY,
   META_PANEL_WIDTH_KEY,
   META_STORE,
@@ -118,6 +119,26 @@ export async function saveActiveWorkspaceId(workspaceId: string | null): Promise
   const db = await openMindMapDb();
   try {
     await db.put(META_STORE, workspaceId, META_ACTIVE_WORKSPACE_KEY);
+  } finally {
+    db.close();
+  }
+}
+
+/** Absolute path of the last active vault, or null when none was ever chosen. */
+export async function loadLastVaultPath(): Promise<string | null> {
+  const db = await openMindMapDb();
+  try {
+    const value = await db.get(META_STORE, META_LAST_VAULT_PATH_KEY);
+    return typeof value === "string" ? value : null;
+  } finally {
+    db.close();
+  }
+}
+
+export async function saveLastVaultPath(path: string | null): Promise<void> {
+  const db = await openMindMapDb();
+  try {
+    await db.put(META_STORE, path, META_LAST_VAULT_PATH_KEY);
   } finally {
     db.close();
   }

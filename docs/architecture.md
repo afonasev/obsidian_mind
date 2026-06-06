@@ -41,13 +41,32 @@ persistence ──▶ domain
 
 ## Desktop-обёртка: Tauri
 
-`src-tauri/` — Rust-крейт `app_lib`, точка входа — `src-tauri/src/main.rs` → `app_lib::run()` в `lib.rs`. В нём `tauri::Builder::default()` + подключение `tauri-plugin-log` в debug и `tauri-plugin-window-state` (только desktop, под `#[cfg(desktop)]`). Кастомных команд (`#[tauri::command]`) нет.
+`src-tauri/` — Rust-крейт `app_lib`, точка входа — `src-tauri/src/main.rs` → `app_lib::run()` в `lib.rs`. В нём `tauri::Builder::default()` + подключение `tauri-plugin-log` в debug, `tauri-plugin-window-state` (только desktop, под `#[cfg(desktop)]`), `tauri-plugin-dialog` (системный диалог выбора папки) и регистрация FS-команд через `invoke_handler`.
 
 `tauri-plugin-window-state` автоматически сохраняет размер и положение окна при выходе и восстанавливает их при следующем запуске. Первый запуск использует размеры из `tauri.conf.json` (`width`/`height`); дальше окно открывается в последнем заданном пользователем размере. Требует разрешения `window-state:default` в `src-tauri/capabilities/default.json`.
 
-`src-tauri/tauri.conf.json` описывает окно (стартовые размеры), dev-URL (`http://localhost:5173`) и команды `beforeDevCommand` / `beforeBuildCommand`, проксирующие в `bun run dev` / `bun run build`.
+`src-tauri/tauri.conf.json` описывает окно (стартовые размеры), dev-URL (`http://localhost:5173`) и команды `beforeDevCommand` / `beforeBuildCommand`, проксирующие в `bun run dev` / `bun run build`. CSP — `null` (сетевого I/O нет).
 
-Работа с файлами на диске пользователя планируется отдельным change — там появятся первые команды и `docs/architecture.md` обновится разделом про IPC-контракт. Правила для будущего Rust-кода — в [`.claude/rules/tauri.md`](../.claude/rules/tauri.md).
+### IPC: файловый мост к vault
+
+Источник правды для контента — выбранная пользователем директория-**vault** в обычной ФС. Доступ к ней идёт через узкий набор типизированных Rust-команд в `src-tauri/src/fs_commands.rs`, зарегистрированных в `lib.rs`:
+
+| Команда         | Аргументы                          | Возврат                              |
+| --------------- | ---------------------------------- | ------------------------------------ |
+| `fs_read_dir`   | `vault_root`, `rel_path`           | `Vec<DirEntry>` — рекурсивное дерево `{ name, rel_path, is_dir }` |
+| `fs_read_text`  | `vault_root`, `rel_path`           | `String` (UTF-8)                     |
+| `fs_write_text` | `vault_root`, `rel_path`, `contents` | `()`                               |
+| `fs_create_dir` | `vault_root`, `rel_path`           | `()` (`create_dir_all`)              |
+| `fs_remove`     | `vault_root`, `rel_path`           | `()` (рекурсивно для каталога)       |
+| `fs_rename`     | `vault_root`, `from_rel`, `to_rel` | `()`                                 |
+
+**Модель confinement.** Корень vault не живёт в managed-state процесса (правило `tauri.md`): каждая команда принимает `vault_root` как параметр и путь(и) **относительно** него. Хелпер `resolve_within` до любого сайд-эффекта канонизирует корень (иначе `InvalidVaultRoot`), резолвит относительный путь, для существующих целей канонизирует цель, для создаваемых — родителя, и проверяет, что канонический результат — потомок корня. Иначе — `AppError::PathEscape`. Это закрывает `..`, абсолютные пути и симлинки наружу (за симлинком из vault не следуем).
+
+**Ошибки.** Команды возвращают `Result<T, AppError>`. `AppError` — `enum` (`Serialize + thiserror::Error`), сериализуется adjacently-tagged по полю `kind`: `PathEscape`, `NotFound`, `Io` (несёт `message`), `NotUtf8`, `InvalidVaultRoot`. Фронт различает кейсы по `kind`, а не парсит строку.
+
+**Фронт-мост.** `src/vault/fs-bridge.ts` — типизированные `invoke<T>`-врапперы (camelCase-аргументы Tauri авто-мапит в snake_case Rust-параметры) + `selectVaultDirectory()` через `tauri-plugin-dialog`. `isTauri()` детектит наличие `window.__TAURI_INTERNALS__`; без Tauri (web-сборка, `bun run preview`, Playwright) врапперы не вызывают `invoke`, а отклоняются типизированной `VaultFsError` с `source: "noFilesystem"` — приложение остаётся в состоянии «нет vault» и не падает. Путь активного vault хранится как app-pref в IndexedDB (`loadLastVaultPath` / `saveLastVaultPath` в `persistence/repository.ts`), не внутри самого vault.
+
+Capability диалога — минимальная: `dialog:allow-open` в `src-tauri/capabilities/default.json` (без wildcard). Правила Rust-кода — в [`.claude/rules/tauri.md`](../.claude/rules/tauri.md).
 
 ## Конфигурация и окружение
 

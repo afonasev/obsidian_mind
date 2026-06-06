@@ -17,6 +17,8 @@ export const META_PANEL_WIDTH_KEY = "panelWidth";
 export const META_EDITOR_WIDTH_KEY = "editorPanelWidth";
 // Ids of workspaces whose root list is collapsed in the panel (absent = expanded).
 export const META_COLLAPSED_ROOTS_KEY = "collapsedWorkspaceRoots";
+// Absolute path of the last active vault directory (absent = no vault chosen yet).
+export const META_LAST_VAULT_PATH_KEY = "lastVaultPath";
 
 /** Key for the per-workspace list of collapsed node ids inside the `meta` store. */
 export function collapsedNodesKey(workspaceId: string): string {

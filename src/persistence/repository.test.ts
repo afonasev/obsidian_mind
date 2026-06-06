@@ -20,6 +20,7 @@ import {
   loadEditorCollapsed,
   loadEditorWidth,
   loadGraph,
+  loadLastVaultPath,
   loadPanelCollapsed,
   loadPanelWidth,
   loadWorkspaces,
@@ -29,6 +30,7 @@ import {
   saveEditorCollapsed,
   saveEditorWidth,
   saveGraph,
+  saveLastVaultPath,
   savePanelCollapsed,
   savePanelWidth,
   saveWorkspace,
@@ -267,6 +269,21 @@ describe("meta", () => {
     await saveActiveWorkspaceId("w1");
     await saveActiveWorkspaceId(null);
     expect(await loadActiveWorkspaceId()).toBeNull();
+  });
+
+  it("returns null last vault path by default", async () => {
+    expect(await loadLastVaultPath()).toBeNull();
+  });
+
+  it("reads back a saved last vault path", async () => {
+    await saveLastVaultPath("/home/user/vault");
+    expect(await loadLastVaultPath()).toBe("/home/user/vault");
+  });
+
+  it("treats a stored null last vault path as none", async () => {
+    await saveLastVaultPath("/home/user/vault");
+    await saveLastVaultPath(null);
+    expect(await loadLastVaultPath()).toBeNull();
   });
 
   it("returns false panel-collapsed by default", async () => {
