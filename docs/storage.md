@@ -1,127 +1,137 @@
 # Хранилище
 
-Граф каждого **пространства** (workspace) хранится в IndexedDB браузерного webview через тонкую промис-обёртку [`idb`](https://github.com/jakearchibald/idb). Никакого сервера / диска / синхронизации в этом change нет.
+Источник правды содержимого базы знаний — **файлы vault** (директория, выбранная пользователем). Пространства, корни и узлы раскладываются на папки и обычные `.md`-заметки, видимые в Obsidian и git; вёрстка (позиции, стиль, дерево) живёт в скрытой `.mind/`. Приложение — *view* над директорией. IndexedDB хранит только **настройки приложения**, не контент.
 
-## Схема IndexedDB
+Решение и его цена — [`decisions/2026-06-06_vault-as-source-of-truth.md`](./decisions/2026-06-06_vault-as-source-of-truth.md).
+
+## Раскладка на диске
+
+```
+vault/
+├─ .mind/                              # скрытая вёрстка (Obsidian игнорирует dot-папки)
+│  ├─ spaces.yaml                      # упорядоченный список пространств: { id, name }
+│  └─ <Пространство>/
+│     ├─ space.yaml                    # упорядоченный список корней: { id, name }
+│     └─ <Корень>/
+│        └─ root.yaml                  # все узлы корня (id, text, parentId, x, y, style?, collapsed?, file?)
+├─ <Пространство>/                     # папка верхнего уровня = пространство
+│  └─ <Корень>/                        # подпапка = один корень (одно дерево)
+│     ├─ <Имя заметки>.md              # узел с непустым телом: frontmatter `id` + markdown
+│     └─ ...
+```
+
+- **Папка верхнего уровня** vault = пространство; **подпапка пространства** = корень (одно дерево); **`.md`-файл** в папке корня = узел **с непустым телом**. Узлы без тела отдельного файла не имеют — они существуют только в `root.yaml`.
+- `.mind/` зеркалит структуру и хранит вёрстку: набор узлов (включая без-тельные), дерево `parentId`, позиции, стиль, свёрнутость, порядок корней/пространств.
+- **Контент (папки + `.md`) — durable truth существования**; `.mind/` — восстановимый кэш вёрстки. Потеря `.mind/` уплощает дерево, но не теряет ни одной заметки.
+
+## Форматы файлов
+
+YAML выбран ради переносимости и терпимости к ручной правке (надёжный парсинг битых файлов даёт библиотека [`yaml`](https://eemeli.org/yaml/)). Сериализация/парсинг — чистые функции в `src/domain/vault/` (`mind-format.ts`, `note.ts`).
+
+- **`spaces.yaml`** — `{ spaces: [{ id, name }] }`. `name` = имя папки пространства; порядок = порядок в панели.
+- **`space.yaml`** — `{ roots: [{ id, name }] }`. `name` = имя папки корня; `id` = id корневого узла. Только порядок и стабильная связка папка→id; позиции узлов — в `root.yaml`.
+- **`root.yaml`** — `{ nodes: [{ id, text, parentId, x, y, style?, collapsed?, file? }] }` — **единственный дом** структуры и вёрстки всех узлов корня. `file` — имя `.md`-файла, присутствует только у узлов с телом.
+- **`.md`-заметка** — frontmatter с единственным полем `id` плюс markdown-тело: `---\nid: <NodeId>\n---\n<body>`. Координаты/стиль в заметку **не** попадают (Решение 2 в design) — заметки остаются чистыми и Obsidian-native.
+
+Рёбра графа (`MindEdge`) на диск **не пишутся**: они выводятся из `parentId` при чтении (ребро на каждый узел с непустым существующим родителем).
+
+## Связка заметки с узлом — по `id`
+
+При чтении корня для каждой записи `root.yaml` с полем `file` тело ищется так (Решение 4):
+
+1. заметка, чей `id` во frontmatter совпадает с `id` записи — берём её (даже если имя файла разошлось с `file`);
+2. иначе, если заметка с именем `file` есть и у неё **нет** своего `id` — берём по имени;
+3. иначе узел остаётся **без тела**, ошибка не показывается.
+
+Переименование/перенос `.md` в Obsidian (с сохранением `id`) не рвёт связь. Имя файла — производное от текста узла (`sanitizeName`: запрещённые символы → пробел, пустое → дефолт, коллизия сиблингов → суффикс по `id`); при переименовании узла в приложении файл best-effort переименовывается.
+
+## Мягкое чтение (дефолты по-элементно)
+
+Любая порча/отсутствие вёрстки замещается дефолтами без необработанной ошибки (`src/domain/vault/space-mapping.ts`, `readSpace`):
+
+| Что испорчено/отсутствует | Поведение |
+| --- | --- |
+| Битая запись узла в `root.yaml` | запись скипается (нет `id`) либо берёт дефолты (нет `text`/`x`/`y`/`style`), остальной корень читается |
+| `root.yaml` отсутствует/нечитаем | дерево корня восстанавливается из `.md`: синтезируется корневой узел (имя = имя папки), все заметки — плоские дети корня, позиции по дефолту |
+| `space.yaml` отсутствует | корни = подпапки пространства, порядок лексикографический, id корней — из `root.yaml` либо новые |
+| `spaces.yaml` отсутствует | пространства = папки верхнего уровня, порядок лексикографический, id — новые |
+| `file` указывает на отсутствующую заметку | узел остаётся без тела, сохраняет `text` из `root.yaml` |
+| Папка корня без `root.yaml` и без `.md` | пропускается (пустой каталог не воскрешается как фантомный корень) |
+| Неизвестная `.md` рядом (нет записи) | усыновляется как ребёнок корня с дефолтной позицией (полное согласование — в `vault-open-refresh`) |
+
+Корни ищутся из **обеих** сторон — плоской папки пространства (заметки) и `.mind/<Пространство>/` (вёрстка): корень из одних без-тельных узлов не имеет плоской папки вовсе.
+
+## Порт `VaultStore` и адаптеры
+
+`src/persistence/vault/` — единый порт доступа к содержимому vault с взаимозаменяемыми реализациями (Решение 6). Логика приложения никогда не трогает ФС напрямую.
+
+- **`VaultFs`** (`vault-fs.ts`) — низкоуровневая ФС-поверхность одного открытого vault: `readDir` (рекурсивно, пути относительно корня vault), `readText`, `writeText`, `createDir`, `remove`, `rename`. Реализации:
+  - `createFsVaultFs(vaultRoot)` — поверх команд `vault-access` (нативная ФС в Tauri);
+  - `createMemoryVaultFs(seed?)` — карта путь→содержимое (unit-тесты, контрактные тесты);
+  - `createLocalStorageVaultFs(key)` — поверх `localStorage` (web-сборка `preview`/e2e, где ФС нет, но контент должен пережить reload).
+- **`VaultStore`** (`vault-store.ts`) — высокоуровневый порт над `VaultFs` + чистый маппинг домена: `loadSpaces` / `saveSpaces`, `readSpace`, `applyDiff`, `createSpace` / `renameSpace` / `deleteSpace`. Одна реализация (`createVaultStore(fs)`) над любым `VaultFs` — поэтому FS и in-memory адаптеры ведут себя одинаково (контрактные тесты в `vault-store.test.ts`).
+
+Запись текстовых файлов в `applyDiff` идёт через **временный файл + rename**, чтобы сбой посреди записи не оставил повреждённый файл (Решение 7).
+
+## Маппинг граф↔файлы (домен)
+
+`src/domain/vault/` — чистые функции над «файлами» (без React/IDB/Tauri), покрываются на in-memory:
+
+- `space-mapping.ts` — `readSpace(raw)` (файлы → `Graph` + свёрнутые узлы + порядок корней), `spaceDesiredFiles(space, graph, collapsed)` (граф → полный набор желаемых файлов пространства), `diffFiles(prev, desired)` (минимальные `writes`/`deletes`), `mergeSpaces`.
+- `mind-format.ts`, `note.ts`, `file-name.ts`, `model.ts` — форматы и sanitize.
+
+## Автосохранение: дифф затронутых файлов
+
+Дебаунс-сейвер (`debounced-saver.ts`, 250 мс) при каждой мутации активного среза вызывает `saveActiveSpace` стора, который:
+
+1. сериализует граф + свёрнутые узлы активного пространства в **полный** желаемый набор файлов (`spaceDesiredFiles`);
+2. диффит его против кэша `lastWritten` (`diffFiles`) и применяет **только изменённые** `root.yaml`/заметки через `vault.applyDiff`;
+3. обновляет `lastWritten`.
+
+Кэш `lastWritten` инициализируется желаемым набором при загрузке/входе в пространство, поэтому первая правка диффится минимально, а не переписывает весь корень. Перед сменой активного пространства/корня стор синхронно делает `flush` (резолв целевого пространства — в момент записи). `bindUnloadFlush` подписывает `flush` на `beforeunload`/`pagehide`. Детали стора — [`frontend.md`](./frontend.md), жизненный цикл сессии vault (открытие/перечитка) — change `vault-open-refresh`.
+
+## Настройки приложения в IndexedDB
+
+IDB (`src/persistence/db.ts`, `repository.ts`) сужена до **app-prefs** — контент в неё больше не пишется (BREAKING, без миграции графов из старых версий).
 
 | Поле | Значение |
 | --- | --- |
-| База | `mindmap` |
-| Версия | `2` |
-| Object store `graph` | граф пространства, ключ = `workspaceId` |
-| Object store `workspaces` | метаданные пространств, ключ = `workspaceId` |
-| Object store `meta` | синглтоны UI (активное пространство, состояние панели) |
+| База / версия | `mindmap` / `3` (v3 удаляет старые stores `graph` и `workspaces`) |
+| Object store `meta` | синглтоны настроек под строковыми ключами |
 
-Константы и типы записей — в `src/persistence/db.ts`:
+Ключи `meta`: `lastVaultPath: string` (последний открытый vault), `activeWorkspace:<vaultPath>: string` (активное пространство **per-vault** — путь входит в ключ), `panelCollapsed` / `editorPanelCollapsed: boolean`, `panelWidth` / `editorPanelWidth: number`, `collapsedWorkspaceRoots: string[]` (id пространств со свёрнутым списком корней в панели). Тема хранится отдельно в `localStorage` (`src/theme/theme.ts`, контракт с анти-flash-скриптом в `index.html`).
 
-```ts
-export const DB_NAME = "mindmap";
-export const DB_VERSION = 2;
-export const GRAPH_STORE = "graph";
-export const WORKSPACES_STORE = "workspaces";
-export const META_STORE = "meta";
-export const META_ACTIVE_WORKSPACE_KEY = "activeWorkspaceId";
-export const META_PANEL_COLLAPSED_KEY = "panelCollapsed";
-export const META_COLLAPSED_ROOTS_KEY = "collapsedWorkspaceRoots";
-export const META_EDITOR_COLLAPSED_KEY = "editorPanelCollapsed";
-export const META_PANEL_WIDTH_KEY = "panelWidth";
-export const META_EDITOR_WIDTH_KEY = "editorPanelWidth";
+Свёрнутость узлов (`collapsed`) переехала из IDB в `root.yaml` — это вёрстка, а не настройка приложения.
 
-export interface StoredGraph {
-  readonly version: 2;
-  readonly nodes: unknown;
-  readonly edges: unknown;
-  readonly updatedAt: number;
-}
-```
-
-- **`graph`** — одна запись `StoredGraph` на пространство под ключом `workspaceId` (раньше был фиксированный ключ `current` — один граф на приложение).
-- **`workspaces`** — запись `Workspace { id, name, createdAt }` под ключом `id`. Порядок в списке = сортировка по `createdAt` (делается в `loadWorkspaces`).
-- **`meta`** — значения под строковыми ключами-константами: `activeWorkspaceId: string | null`, `panelCollapsed: boolean`, `collapsedWorkspaceRoots: string[]` (id пространств, чьи списки корней свёрнуты в панели; отсутствие id = развёрнуто) `editorPanelCollapsed: boolean` (состояние правой панели-редактора; отсутствие ключа = развёрнута), `panelWidth: number` и `editorPanelWidth: number` (ширины левой и правой панелей в px; отсутствие ключа = ширина по умолчанию), а также per-workspace ключи `collapsedNodes:<workspaceId>: NodeId[]` — список id свёрнутых узлов пространства (состояние вида, вне графа и вне undo/redo; отсутствие записи = всё развёрнуто; запись удаляется вместе с пространством). Малы и пишутся немедленно (без дебаунса).
-
-`nodes` / `edges` типизированы как `unknown` — это сознательно: данные приходят из внешнего источника (предыдущая сессия / повреждённая запись), и любой каст в `MindNode[]` без проверки был бы враньём типизатору. Преобразование в `Graph` идёт через `repository.toGraph` + `sanitize` (см. ниже).
-
-Модель «граф на пространство» и отказ от миграции v1 — [`decisions/2026-06-04_workspaces.md`](./decisions/2026-06-04_workspaces.md).
-
-## Формат данных
+## Форматы данных (домен)
 
 Доменные типы — `src/domain/types.ts`:
 
 ```ts
 interface MindNode {
-  readonly id: NodeId;             // crypto.randomUUID()
+  readonly id: NodeId;              // crypto.randomUUID()
   readonly text: string;
-  readonly position: Position;     // { x: number, y: number }
+  readonly position: Position;      // { x: number, y: number }
   readonly parentId: NodeId | null; // null для корневых
-  readonly body?: string;          // markdown-тело узла; отсутствует = пустое
-  readonly style?: NodeNameStyle;  // стиль имени; отсутствует = без форматирования
+  readonly body?: string;           // markdown-тело узла; отсутствует = пустое
+  readonly style?: NodeNameStyle;   // стиль имени; отсутствует = без форматирования
 }
 
 interface NodeNameStyle {
-  readonly bold?: boolean;         // имя целиком жирным
-  readonly italic?: boolean;       // имя целиком курсивом
-  readonly fontScale?: number;     // целочисленный шаг размера в [FONT_SCALE_MIN, FONT_SCALE_MAX]
-  readonly color?: string;         // цвет заливки: ключ пресета | сырой #rrggbb; отсутствует = дефолт
-}
-
-interface MindEdge {
-  readonly id: EdgeId;
-  readonly source: NodeId;          // parent node id
-  readonly target: NodeId;          // child node id
+  readonly bold?: boolean;
+  readonly italic?: boolean;
+  readonly fontScale?: number;      // целочисленный шаг в [FONT_SCALE_MIN, FONT_SCALE_MAX]
+  readonly color?: string;          // ключ пресета | сырой #rrggbb; отсутствует = дефолт
 }
 
 interface Graph {
   readonly nodes: readonly MindNode[];
-  readonly edges: readonly MindEdge[];
+  readonly edges: readonly MindEdge[]; // выводятся из parentId, на диск не пишутся
 }
 ```
 
-`parentId` в `MindNode` дублирует информацию из `MindEdge`. Дубль сознательный: даёт `O(1)` проход «вверх» и упрощает удаление поддерева. Запись идёт целым графом одной транзакцией, так что рассинхрон полей невозможен.
+`parentId` даёт `O(1)` проход «вверх» и определяет принадлежность узла корню (при записи граф разбивается на корни по цепочке `parentId`). `body` / `style` — опциональны: их отсутствие читается как «пусто»/«без форматирования», без миграции. `color` — ключ пресета (адаптируется к теме токеном `--node-fill-<key>`) либо сырой `#rrggbb`; различение предикатом `isPresetKey` при рендере (см. [`frontend.md`](./frontend.md)). Список последних цветов — UI-преференция в `localStorage`, не в vault.
 
-`body` — опциональное markdown-тело узла. Формат хранения остаётся версии `2`: записи, сохранённые до появления тел, не содержат `body` и читаются как `undefined` (тело считается пустым) — `toGraph` кастит `nodes` без проверки поле-за-полем, поэтому миграция и bump `DB_VERSION` не нужны. Рендер тела — [`frontend.md`](./frontend.md) (`EditorPanel`), выбор рендерера — [`decisions/2026-06-05_markdown-render.md`](./decisions/2026-06-05_markdown-render.md).
+## Целостность
 
-`style` — опциональный стиль имени узла (жирность, курсив, относительный размер шрифта `fontScale`, цвет заливки `color`). По той же схеме, что и `body`: записи без `style` читаются как `undefined` («без форматирования»), миграция и bump `DB_VERSION` не нужны. `fontScale` хранится целым шагом (не px) и клампится в домене (`updateNodeStyle`); маппинг шага в размер и сам тулбар форматирования — [`frontend.md`](./frontend.md) (`CloudNode`).
-
-`color` — опциональный цвет заливки облака. Значение бывает двух видов: **ключ пресета** (например `"amber"`, адаптируется к теме через токен `--node-fill-<key>`) либо **сырой `#rrggbb`** (одинаков в обеих темах); различение при рендере — предикатом `isPresetKey` (кастом всегда начинается с `#`). Отсутствие поля = дефолтная поверхность, без миграции. Новый ребёнок наследует снимок `color` родителя на момент создания (`addChild`), сброс удаляет ключ из `style` (`updateNodeStyle` с `clear`). Список последних использованных цветов — это UI-преференция в `localStorage` вне графа (см. [`frontend.md`](./frontend.md)), в IDB не пишется.
-
-## Операции
-
-`src/persistence/repository.ts`:
-
-- `loadGraph(workspaceId): Promise<Graph | null>` — читает граф пространства по ключу, прогоняет через `sanitize`. Нет записи — `null`.
-- `saveGraph(workspaceId, graph): Promise<void>` — пишет `{ version: 2, nodes, edges, updatedAt: Date.now() }` под ключ `workspaceId`.
-- `loadWorkspaces(): Promise<readonly Workspace[]>` — все пространства, отсортированные по `createdAt`.
-- `saveWorkspace(workspace)` — upsert записи пространства по `id` (создание и переименование).
-- `deleteWorkspace(workspaceId)` — удаляет запись пространства **и его граф** одной транзакцией над `workspaces` + `graph`.
-- `loadActiveWorkspaceId()` / `saveActiveWorkspaceId(id)` — активное пространство в `meta` (`null`, если не выбрано).
-- `loadPanelCollapsed()` / `savePanelCollapsed(collapsed)` — состояние сворачивания панели в `meta` (по умолчанию `false`).
-- `loadAllRoots(): Promise<Map<workspaceId, PanelRoot[]>>` — корни (`parentId === null`) всех пространств одним проходом курсором по `graph`; рёбра не нужны, `sanitize` пропускается. Питает второй уровень панели для **неактивных** пространств (у активного корни деривятся из живого графа).
-- `loadCollapsedRoots()` / `saveCollapsedRoots(ids)` — список свёрнутых списков корней в `meta` (по умолчанию `[]`).
-- `loadCollapsedNodes(workspaceId)` / `saveCollapsedNodes(workspaceId, ids)` — список id свёрнутых узлов пространства под ключом `collapsedNodes:<workspaceId>` в `meta` (по умолчанию `[]`). Запись чистится в `deleteWorkspace` в той же транзакции, что граф и пространство.
-- `loadEditorCollapsed()` / `saveEditorCollapsed(collapsed)` — состояние сворачивания правой панели-редактора в `meta` (по умолчанию `false` = развёрнута).
-- `loadPanelWidth()` / `savePanelWidth(width)` и `loadEditorWidth()` / `saveEditorWidth(width)` — ширины левой и правой панелей в `meta` (возвращают `number | null`; `null` = ширина по умолчанию, применяется в сторе).
-
-## Дебаунс автосохранения
-
-`src/persistence/debounced-saver.ts` экспортирует `createDebouncedSaver(save, options)`:
-
-- Дефолтная задержка — `DEFAULT_SAVE_DELAY_MS = 250` мс.
-- `schedule(graph)` — кладёт `graph` как `pending`, сбрасывает прошлый таймер, ставит новый. Если в течение 250 мс пришёл новый `schedule` — он перетирает прошлый, в IDB запишется только последний снимок.
-- `flush()` — синхронно отменяет таймер, сразу ставит `pending` в очередь сохранений и дожидается всей цепочки. Возвращает `Promise<void>`.
-- `dispose()` — после вызова `schedule` становится no-op'ом; используется в тестах и при размонтировании.
-- Saves сериализуются через внутреннюю Promise-цепочку (`chain = chain.then(...)`). Это значит, что `flush()` дожидается всех уже выпущенных операций сохранения, а не только последней.
-- Ошибки сохранения по умолчанию логируются через `console.error` (Biome-исключение в коде явно прокомментировано — потеря данных не должна быть «тихой»). При создании сейвера можно передать свой `onError`.
-
-Сейвер графа **владеет стором** (`createMindMapStore` создаёт его из `persistence.saveGraph`): замыкание сохранения резолвит целевой `workspaceId` из `activeWorkspaceId` **в момент записи**. Поэтому перед сменой активного пространства стор синхронно делает `flush` (см. `selectWorkspace` / `deleteWorkspace`) — иначе отложенная запись графа A ушла бы под ключ B. Подробнее — [`frontend.md`](./frontend.md) (раздел про стор).
-
-`bindUnloadFlush(flush)` подписывает переданный коллбэк `flush` на оба `beforeunload` и `pagehide` (в `App` это `mindMapStore.getState().flush()`). Парность нужна, потому что в современных браузерах и Tauri-webview жизненный цикл закрытия страницы дробится между этими событиями. Возвращает функцию отписки.
-
-## Целостность графа
-
-`src/domain/integrity.ts` экспортирует `sanitize(graph: Graph): Graph` — отбрасывает рёбра, чьи `source` или `target` не существуют в `nodes`. Вызывается каждый раз при загрузке (`loadGraph`). Это защита от ситуации, когда IDB содержит повреждённую или несовместимую с текущей версией приложения запись: вместо краша пользователь увидит валидный подграф.
-
-При мутациях стора целостность обеспечивается доменными функциями (`removeSubtree` чистит и узлы, и инцидентные рёбра атомарно). Запись в IDB всегда консистентна; `sanitize` на загрузке — это второй пояс безопасности на случай ручного вмешательства в базу или будущих миграций.
-
-## Версионирование
-
-Поле `version: 2` в записи графа — задел под будущие миграции схемы. При апгрейде с версии `1` (`upgrade`-колбэк `openMindMapDb`) старый store `graph` пересоздаётся: запись `current` **не переносится** (у реальных пользователей графа ещё нет), и создаются stores `workspaces` и `meta`. Это осознанный BREAKING-переход — см. [`decisions/2026-06-04_workspaces.md`](./decisions/2026-06-04_workspaces.md). Когда формат записи графа изменится дальше, поднимется `DB_VERSION`, а в `repository.toGraph` появится разветвление по `record.version`.
+`src/domain/integrity.ts` (`sanitize`) отбрасывает рёбра с несуществующими концами — второй пояс на случай ручного вмешательства. При мутациях стора целостность обеспечивают доменные функции (`removeSubtree` чистит узлы и рёбра атомарно); рёбра выводятся из `parentId` и при чтении пропускают висячие ссылки на отсутствующего родителя.

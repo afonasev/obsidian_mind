@@ -1,6 +1,6 @@
 # Архитектура
 
-Приложение — SPA на React 19 + TypeScript, упакованное в Tauri 2 как desktop. Хранение данных — локальное, в IndexedDB браузерного webview.
+Приложение — SPA на React 19 + TypeScript, упакованное в Tauri 2 как desktop. Источник правды содержимого — **файлы выбранного vault** (через порт `VaultStore`); IndexedDB браузерного webview хранит только настройки приложения. Раскладка vault и форматы файлов — в [`storage.md`](./storage.md).
 
 ## Слои фронта
 
@@ -15,8 +15,8 @@ persistence ──▶ domain
 
 | Слой               | Путь              | Что внутри                                                                                                                                              | Что НЕ знает          |
 | ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `domain/`          | `src/domain/`     | Чистые типы (`MindNode`, `MindEdge`, `Graph`, `Position`) и функции графа: `createEmpty`, `addRoot`, `addChild`, `removeSubtree`, `updateText`, `moveNode`, `sanitize`. | React, IDB, Tauri.    |
-| `persistence/`     | `src/persistence/`| Открытие IndexedDB-базы `mindmap` v1, `loadGraph` / `saveGraph`, `createDebouncedSaver` (250 мс), `bindUnloadFlush`.                                     | React, стор.          |
+| `domain/`          | `src/domain/`     | Чистые типы (`MindNode`, `MindEdge`, `Graph`, `Position`) и функции графа (`createEmpty`, `addRoot`, …, `sanitize`); чистый маппинг граф↔файлы vault в `domain/vault/` (форматы `.mind/`, frontmatter, sanitize имён, мягкое чтение, дифф файлов). | React, IDB, Tauri.    |
+| `persistence/`     | `src/persistence/`| Порт `VaultStore` (`persistence/vault/`) над `VaultFs` (FS / in-memory / localStorage) для контента; IndexedDB `mindmap` v3 — только app-prefs (`db.ts`, `repository.ts`); `createDebouncedSaver` (250 мс), `bindUnloadFlush`. | React, стор.          |
 | `store/`           | `src/store/`      | `zustand`-стор `createMindMapStore`, синглтон `mindMapStore`, хук `useMindMapStore`, `bindSaver` для связи мутаций графа с дебаунс-сейвером.            | DOM, рендер.          |
 | `components/`      | `src/components/` | React-компоненты UI. Появятся в текущем change на этапе UI-слоя (`Canvas`, `CloudNode`). Читают и мутируют граф только через стор.                       | IDB напрямую, Tauri.  |
 
@@ -27,16 +27,16 @@ persistence ──▶ domain
 ### Старт приложения
 
 1. `src/main.tsx` создаёт React-root и рендерит `App`.
-2. На маунте компонент UI-слоя вызовет `mindMapStore.getState().loadFromStorage()`.
-3. `loadFromStorage` идёт в `persistence/repository.ts → loadGraph()` → открывает IndexedDB, читает запись `current` из object store `graph`, прогоняет через `domain/integrity.ts → sanitize` (отбрасывает рёбра, ссылающиеся на несуществующие узлы) и кладёт `Graph` в стор.
+2. На маунте `App` вызывает `mindMapStore.getState().loadWorkspaces()`.
+3. Стор резолвит активный vault (`resolveVault`: FS-адаптер по `lastVaultPath` в Tauri, иначе localStorage-адаптер в web), читает список пространств (`VaultStore.loadSpaces`) и граф активного пространства (`VaultStore.readSpace` → файлы `.mind/` + `.md` → `Graph` + свёрнутые узлы); активное пространство берётся из app-pref `activeWorkspace:<vaultPath>`.
 4. Канвас подписан на стор через `useMindMapStore` и отрисовывает узлы / рёбра.
 
 ### Мутация графа
 
-1. Пользователь делает действие (создаёт узел, редактирует текст, перетаскивает) → компонент вызывает экшн стора (`addRoot`, `addChild`, `updateText`, `moveNode`, `removeSubtree`).
+1. Пользователь делает действие → компонент вызывает экшн стора (`addRoot`, `addChild`, `updateText`, `moveNode`, `removeSubtree`).
 2. Экшн вызывает чистую функцию из `domain/graph.ts`, получает новый `Graph`, кладёт в стор.
-3. `bindSaver` подписан на стор и при изменении ссылки `graph` вызывает `saver.schedule(graph)`.
-4. `createDebouncedSaver` копит мутации в окне 250 мс, по таймауту вызывает `saveGraph` → запись в IndexedDB (`{ version: 1, nodes, edges, updatedAt: Date.now() }`).
+3. Подписка стора при изменении ссылки `graph` вызывает `saver.schedule(graph)`.
+4. `createDebouncedSaver` копит мутации в окне 250 мс, по таймауту `saveActiveSpace` сериализует пространство в желаемый набор файлов, диффит против `lastWritten` и применяет только изменённые `root.yaml`/заметки (`VaultStore.applyDiff`, запись через temp-file + rename).
 5. При закрытии окна `bindUnloadFlush` ловит `beforeunload` / `pagehide` и форсирует синхронный flush — последняя мутация не теряется.
 
 ## Desktop-обёртка: Tauri
@@ -67,6 +67,10 @@ persistence ──▶ domain
 **Фронт-мост.** `src/vault/fs-bridge.ts` — типизированные `invoke<T>`-врапперы (camelCase-аргументы Tauri авто-мапит в snake_case Rust-параметры) + `selectVaultDirectory()` через `tauri-plugin-dialog`. `isTauri()` детектит наличие `window.__TAURI_INTERNALS__`; без Tauri (web-сборка, `bun run preview`, Playwright) врапперы не вызывают `invoke`, а отклоняются типизированной `VaultFsError` с `source: "noFilesystem"` — приложение остаётся в состоянии «нет vault» и не падает. Путь активного vault хранится как app-pref в IndexedDB (`loadLastVaultPath` / `saveLastVaultPath` в `persistence/repository.ts`), не внутри самого vault.
 
 Capability диалога — минимальная: `dialog:allow-open` в `src-tauri/capabilities/default.json` (без wildcard). Правила Rust-кода — в [`.claude/rules/tauri.md`](../.claude/rules/tauri.md).
+
+### Порт `VaultStore` над `VaultFs`
+
+Стор не зовёт `fs-bridge` напрямую — он работает через высокоуровневый `VaultStore` (`src/persistence/vault/vault-store.ts`), который компонует чистый маппинг домена над низкоуровневым портом `VaultFs`. У `VaultFs` три взаимозаменяемые реализации: `createFsVaultFs` (поверх Rust-команд, нативная ФС в Tauri), `createMemoryVaultFs` (карта путь→содержимое, тесты) и `createLocalStorageVaultFs` (web-сборка `preview`/e2e, где ФС нет, но контент должен пережить reload). Поскольку `VaultStore` реализован один раз над `VaultFs`, все адаптеры наблюдаемо ведут себя одинаково (контрактные тесты). Подробности форматов и диффа — [`storage.md`](./storage.md).
 
 ## Конфигурация и окружение
 

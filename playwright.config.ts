@@ -1,6 +1,6 @@
 import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/test";
 
-const isCi = !!process.env["CI"];
+const isCi = !!process.env.CI;
 
 const config: PlaywrightTestConfig = {
   testDir: "tests",

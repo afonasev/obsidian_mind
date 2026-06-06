@@ -4,27 +4,29 @@ import type { JSX } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { sideOf } from "../domain/layout";
 import type { Graph, NodeId } from "../domain/types";
-import type { PanelRoot, Workspace } from "../domain/workspaces";
+import { diffFiles, spaceDesiredFiles } from "../domain/vault/space-mapping";
 import type { DebouncedSaver } from "../persistence/debounced-saver";
+import { createMemoryVaultFs, type MemoryVaultFs } from "../persistence/vault/vault-fs";
+import { createVaultStore, type VaultStore } from "../persistence/vault/vault-store";
 import {
+  type AppPrefs,
   createMindMapStore,
   DEFAULT_EDITOR_WIDTH,
   DEFAULT_WORKSPACE_NAME,
+  defaultResolveVault,
   MAX_HISTORY,
   MAX_PANEL_WIDTH,
   MIN_PANEL_WIDTH,
-  type MindMapPersistence,
   type MindMapStore,
   mindMapStore,
   useMindMapStore,
+  WEB_VAULT_PATH,
 } from "./mindmap-store";
 
-type FakePersistence = MindMapPersistence & {
-  loadGraph: ReturnType<typeof vi.fn>;
-  saveGraph: ReturnType<typeof vi.fn>;
-  loadWorkspaces: ReturnType<typeof vi.fn>;
-  saveWorkspace: ReturnType<typeof vi.fn>;
-  deleteWorkspace: ReturnType<typeof vi.fn>;
+const VAULT_PATH = "test";
+
+type FakePrefs = AppPrefs & {
+  loadLastVaultPath: ReturnType<typeof vi.fn>;
   loadActiveWorkspaceId: ReturnType<typeof vi.fn>;
   saveActiveWorkspaceId: ReturnType<typeof vi.fn>;
   loadPanelCollapsed: ReturnType<typeof vi.fn>;
@@ -35,46 +37,25 @@ type FakePersistence = MindMapPersistence & {
   savePanelWidth: ReturnType<typeof vi.fn>;
   loadEditorWidth: ReturnType<typeof vi.fn>;
   saveEditorWidth: ReturnType<typeof vi.fn>;
-  loadAllRoots: ReturnType<typeof vi.fn>;
   loadCollapsedRoots: ReturnType<typeof vi.fn>;
   saveCollapsedRoots: ReturnType<typeof vi.fn>;
-  loadCollapsedNodes: ReturnType<typeof vi.fn>;
-  saveCollapsedNodes: ReturnType<typeof vi.fn>;
 };
 
-function makePersistence(): FakePersistence {
-  const graphs = new Map<string, Graph>();
-  const workspaces = new Map<string, Workspace>();
+function makePrefs(): FakePrefs {
   const meta = {
-    activeId: null as string | null,
+    activeId: new Map<string, string | null>(),
+    lastVault: VAULT_PATH as string | null,
     panel: false,
     editor: false,
     panelWidth: null as number | null,
     editorWidth: null as number | null,
     collapsedRoots: [] as readonly string[],
   };
-  // Per-workspace collapsed node ids, keyed by workspace id.
-  const collapsedNodes = new Map<string, readonly NodeId[]>();
   return {
-    loadGraph: vi.fn(async (id: string) => graphs.get(id) ?? null),
-    saveGraph: vi.fn(async (id: string, graph: Graph) => {
-      graphs.set(id, graph);
-    }),
-    loadWorkspaces: vi.fn(
-      async () =>
-        [...workspaces.values()].sort((a, b) => a.createdAt - b.createdAt) as readonly Workspace[],
-    ),
-    saveWorkspace: vi.fn(async (workspace: Workspace) => {
-      workspaces.set(workspace.id, workspace);
-    }),
-    deleteWorkspace: vi.fn(async (id: string) => {
-      workspaces.delete(id);
-      graphs.delete(id);
-      collapsedNodes.delete(id);
-    }),
-    loadActiveWorkspaceId: vi.fn(async () => meta.activeId),
-    saveActiveWorkspaceId: vi.fn(async (id: string | null) => {
-      meta.activeId = id;
+    loadLastVaultPath: vi.fn(async () => meta.lastVault),
+    loadActiveWorkspaceId: vi.fn(async (path: string) => meta.activeId.get(path) ?? null),
+    saveActiveWorkspaceId: vi.fn(async (path: string, id: string | null) => {
+      meta.activeId.set(path, id);
     }),
     loadPanelCollapsed: vi.fn(async () => meta.panel),
     savePanelCollapsed: vi.fn(async (collapsed: boolean) => {
@@ -92,25 +73,54 @@ function makePersistence(): FakePersistence {
     saveEditorWidth: vi.fn(async (width: number) => {
       meta.editorWidth = width;
     }),
-    loadAllRoots: vi.fn(async () => {
-      const map = new Map<string, readonly PanelRoot[]>();
-      for (const [id, graph] of graphs) {
-        map.set(
-          id,
-          graph.nodes.filter((n) => n.parentId === null).map((n) => ({ id: n.id, text: n.text })),
-        );
-      }
-      return map;
-    }),
     loadCollapsedRoots: vi.fn(async () => meta.collapsedRoots),
     saveCollapsedRoots: vi.fn(async (ids: readonly string[]) => {
       meta.collapsedRoots = ids;
     }),
-    loadCollapsedNodes: vi.fn(async (id: string) => collapsedNodes.get(id) ?? []),
-    saveCollapsedNodes: vi.fn(async (id: string, ids: readonly NodeId[]) => {
-      collapsedNodes.set(id, ids);
-    }),
   };
+}
+
+/** Read one space's graph straight from a memory adapter (for save assertions). */
+async function readSpaceFromFs(fs: MemoryVaultFs, space: string): Promise<Graph> {
+  return (await createVaultStore(fs).readSpace({ id: space, name: space })).graph;
+}
+
+/** Read one space's collapsed-node ids straight from a memory adapter. */
+async function readCollapsedFromFs(fs: MemoryVaultFs, space: string): Promise<readonly NodeId[]> {
+  const result = await createVaultStore(fs).readSpace({ id: space, name: space });
+  return [...result.collapsed];
+}
+
+interface SeedSpace {
+  readonly id: string;
+  readonly name: string;
+  readonly graph?: Graph;
+  readonly collapsed?: Iterable<NodeId>;
+}
+
+/** Populate a store's vault with spaces (and optional graphs) plus the active id. */
+async function seed(
+  bundle: StoreBundle,
+  spaces: readonly SeedSpace[],
+  active?: string | null,
+): Promise<void> {
+  for (const space of spaces) {
+    await bundle.vault.createSpace(space.name);
+  }
+  await bundle.vault.saveSpaces(spaces.map((s) => ({ id: s.id, name: s.name })));
+  for (const space of spaces) {
+    if (space.graph !== undefined) {
+      const desired = spaceDesiredFiles(
+        { id: space.id, name: space.name },
+        space.graph,
+        new Set(space.collapsed),
+      );
+      await bundle.vault.applyDiff(diffFiles(new Map(), desired));
+    }
+  }
+  if (active !== undefined) {
+    await bundle.prefs.saveActiveWorkspaceId(VAULT_PATH, active);
+  }
 }
 
 // A saver that persists only when flushed (via the store's real save closure), so
@@ -143,10 +153,23 @@ function spySaver(): DebouncedSaver & {
   };
 }
 
-function makeStore(): { store: MindMapStore; persistence: FakePersistence } {
-  const persistence = makePersistence();
-  const store = createMindMapStore({ persistence, createSaver: (save) => writingSaver(save) });
-  return { store, persistence };
+interface StoreBundle {
+  readonly store: MindMapStore;
+  readonly prefs: FakePrefs;
+  readonly fs: MemoryVaultFs;
+  readonly vault: VaultStore;
+}
+
+function makeStore(): StoreBundle {
+  const prefs = makePrefs();
+  const fs = createMemoryVaultFs();
+  const vault = createVaultStore(fs);
+  const store = createMindMapStore({
+    prefs,
+    resolveVault: () => ({ vault, vaultPath: VAULT_PATH }),
+    createSaver: (save) => writingSaver(save),
+  });
+  return { store, prefs, fs, vault };
 }
 
 /** A store seeded with one active workspace, for the node-operation tests. */
@@ -307,7 +330,7 @@ describe("setNodeStyle", () => {
   });
 
   it("persists the style change through the autosave flush", async () => {
-    const { store, persistence } = makeStore();
+    const { store, fs } = makeStore();
     store.setState({
       activeWorkspaceId: "ws",
       workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
@@ -318,8 +341,8 @@ describe("setNodeStyle", () => {
     store.getState().setNodeStyle(id, { bold: true });
     await store.getState().flush();
 
-    const saved = await persistence.loadGraph("ws");
-    expect(saved?.nodes.find((n) => n.id === id)?.style?.bold).toBe(true);
+    const saved = await readSpaceFromFs(fs, "W");
+    expect(saved.nodes.find((n) => n.id === id)?.style?.bold).toBe(true);
   });
 });
 
@@ -703,46 +726,58 @@ describe("detach / detach candidate", () => {
 
 describe("loadWorkspaces", () => {
   it("restores list, active workspace, panel state and graph", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
-    await persistence.saveWorkspace({ id: "b", name: "B", createdAt: 2 });
-    await persistence.saveGraph("b", {
-      nodes: [{ id: "n", text: "x", position: { x: 0, y: 0 }, parentId: null }],
-      edges: [],
-    });
-    await persistence.saveActiveWorkspaceId("b");
-    await persistence.savePanelCollapsed(true);
+    const bundle = makeStore();
+    await seed(
+      bundle,
+      [
+        { id: "a", name: "A" },
+        {
+          id: "b",
+          name: "B",
+          graph: {
+            nodes: [{ id: "n", text: "x", position: { x: 0, y: 0 }, parentId: null }],
+            edges: [],
+          },
+        },
+      ],
+      "b",
+    );
+    await bundle.prefs.savePanelCollapsed(true);
 
-    await store.getState().loadWorkspaces();
-    const s = store.getState();
+    await bundle.store.getState().loadWorkspaces();
+    const s = bundle.store.getState();
     expect(s.workspaces.map((w) => w.id)).toEqual(["a", "b"]);
     expect(s.activeWorkspaceId).toBe("b");
     expect(s.panelCollapsed).toBe(true);
     expect(s.graph.nodes).toHaveLength(1);
   });
 
-  it("falls back to no active workspace when the stored id is unknown", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
-    await persistence.saveActiveWorkspaceId("gone");
-    await store.getState().loadWorkspaces();
-    expect(store.getState().activeWorkspaceId).toBeNull();
-    expect(store.getState().graph.nodes).toHaveLength(0);
+  it("defaults to the first workspace when the stored active id is unknown", async () => {
+    const bundle = makeStore();
+    await seed(bundle, [{ id: "a", name: "A" }], "gone");
+    await bundle.store.getState().loadWorkspaces();
+    expect(bundle.store.getState().activeWorkspaceId).toBe("a");
+  });
+
+  it("leaves no active workspace when the vault has no spaces", async () => {
+    const bundle = makeStore();
+    await bundle.store.getState().loadWorkspaces();
+    expect(bundle.store.getState().activeWorkspaceId).toBeNull();
+    expect(bundle.store.getState().graph.nodes).toHaveLength(0);
   });
 
   it("tolerates an active workspace that has no stored graph yet", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
-    await persistence.saveActiveWorkspaceId("a");
-    await store.getState().loadWorkspaces();
-    expect(store.getState().activeWorkspaceId).toBe("a");
-    expect(store.getState().graph.nodes).toHaveLength(0);
+    const bundle = makeStore();
+    await seed(bundle, [{ id: "a", name: "A" }], "a");
+    await bundle.store.getState().loadWorkspaces();
+    expect(bundle.store.getState().activeWorkspaceId).toBe("a");
+    expect(bundle.store.getState().graph.nodes).toHaveLength(0);
   });
 });
 
 describe("createWorkspace", () => {
   it("creates an active workspace and opens inline name editing", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs, vault } = makeStore();
     await store.getState().createWorkspace();
     const s = store.getState();
     expect(s.workspaces).toHaveLength(1);
@@ -751,8 +786,8 @@ describe("createWorkspace", () => {
     expect(s.editingWorkspaceId).toBe(id);
     expect(s.workspaces[0]?.name).toBe("");
     expect(s.graph.nodes).toHaveLength(0);
-    expect(persistence.saveWorkspace).toHaveBeenCalled();
-    expect(persistence.saveActiveWorkspaceId).toHaveBeenCalledWith(id);
+    expect(await vault.loadSpaces()).toHaveLength(1);
+    expect(prefs.saveActiveWorkspaceId).toHaveBeenCalledWith(VAULT_PATH, id);
   });
 });
 
@@ -818,6 +853,20 @@ describe("commitWorkspaceName / cancelWorkspaceName / startWorkspaceRename", () 
     await store.getState().cancelWorkspaceName("ghost");
     expect(store.getState().editingWorkspaceId).toBeNull();
   });
+
+  it("renames an inactive workspace without remapping the active write-cache", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    const a = store.getState().activeWorkspaceId ?? "";
+    await store.getState().commitWorkspaceName(a, "A");
+    await store.getState().createWorkspace();
+    await store.getState().commitWorkspaceName(store.getState().activeWorkspaceId ?? "", "B");
+    // `a` is now inactive; renaming it must rename its folder but not touch the
+    // active space's write-cache.
+    store.getState().startWorkspaceRename(a);
+    await store.getState().commitWorkspaceName(a, "AA");
+    expect(store.getState().workspaces.find((w) => w.id === a)?.name).toBe("AA");
+  });
 });
 
 describe("selectWorkspace", () => {
@@ -840,13 +889,21 @@ describe("selectWorkspace", () => {
     expect(store.getState().graph.nodes.map((n) => n.text)).toEqual(["in B"]);
   });
 
+  it("entering an unknown workspace id yields an empty graph", async () => {
+    const { store } = makeStore();
+    await store.getState().createWorkspace();
+    await store.getState().commitWorkspaceName(store.getState().activeWorkspaceId ?? "", "A");
+    await store.getState().selectWorkspace("ghost");
+    expect(store.getState().graph.nodes).toEqual([]);
+  });
+
   it("is a no-op when selecting the already-active workspace", async () => {
-    const { store, persistence } = makeStore();
+    const { store, vault } = makeStore();
     await store.getState().createWorkspace();
     const a = store.getState().activeWorkspaceId ?? "";
-    persistence.loadGraph.mockClear();
+    const readSpy = vi.spyOn(vault, "readSpace");
     await store.getState().selectWorkspace(a);
-    expect(persistence.loadGraph).not.toHaveBeenCalled();
+    expect(readSpy).not.toHaveBeenCalled();
   });
 
   it("keeps undo/redo history isolated per workspace", async () => {
@@ -889,14 +946,14 @@ describe("deleteWorkspace", () => {
   });
 
   it("drops into the empty state when the last workspace is removed", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     await store.getState().createWorkspace();
     const a = store.getState().activeWorkspaceId ?? "";
     await store.getState().deleteWorkspace(a);
     expect(store.getState().activeWorkspaceId).toBeNull();
     expect(store.getState().workspaces).toHaveLength(0);
     expect(store.getState().graph.nodes).toHaveLength(0);
-    expect(persistence.saveActiveWorkspaceId).toHaveBeenLastCalledWith(null);
+    expect(prefs.saveActiveWorkspaceId).toHaveBeenLastCalledWith(VAULT_PATH, null);
   });
 
   it("removes a non-active workspace without changing the active graph", async () => {
@@ -910,15 +967,15 @@ describe("deleteWorkspace", () => {
     expect(store.getState().graph.nodes).toHaveLength(1);
   });
 
-  it("deletes the workspace together with its graph through persistence", async () => {
-    const { store, persistence } = makeStore();
+  it("deletes the workspace's space folder from the vault", async () => {
+    const { store, vault } = makeStore();
     await store.getState().createWorkspace();
     const id = store.getState().activeWorkspaceId ?? "";
     store.getState().addRoot({ position: { x: 0, y: 0 }, text: "X" });
     store.getState().stopEditing();
+    await store.getState().flush();
     await store.getState().deleteWorkspace(id);
-    expect(persistence.deleteWorkspace).toHaveBeenCalledWith(id);
-    expect(await persistence.loadGraph(id)).toBeNull();
+    expect(await vault.loadSpaces()).toEqual([]);
   });
 
   it("clears inline editing when the workspace being edited is removed", async () => {
@@ -1124,7 +1181,7 @@ describe("focus history (goBack / goForward)", () => {
   });
 
   it("resets the focus history on loadWorkspaces", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     await store.getState().createWorkspace();
     addAndSelectRoot(store, 0);
     expect(store.getState().navHistory.length).toBeGreaterThan(0);
@@ -1133,16 +1190,16 @@ describe("focus history (goBack / goForward)", () => {
     await store.getState().loadWorkspaces();
     expect(store.getState().navHistory).toHaveLength(0);
     expect(store.getState().navCursor).toBe(-1);
-    expect(persistence.loadWorkspaces).toHaveBeenCalled();
+    expect(prefs.loadLastVaultPath).toHaveBeenCalled();
   });
 });
 
 describe("togglePanel", () => {
   it("flips and persists the collapsed state", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     await store.getState().togglePanel();
     expect(store.getState().panelCollapsed).toBe(true);
-    expect(persistence.savePanelCollapsed).toHaveBeenCalledWith(true);
+    expect(prefs.savePanelCollapsed).toHaveBeenCalledWith(true);
     await store.getState().togglePanel();
     expect(store.getState().panelCollapsed).toBe(false);
   });
@@ -1150,17 +1207,17 @@ describe("togglePanel", () => {
 
 describe("toggleEditor", () => {
   it("flips and persists the editor-collapsed state", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     await store.getState().toggleEditor();
     expect(store.getState().editorCollapsed).toBe(true);
-    expect(persistence.saveEditorCollapsed).toHaveBeenCalledWith(true);
+    expect(prefs.saveEditorCollapsed).toHaveBeenCalledWith(true);
     await store.getState().toggleEditor();
     expect(store.getState().editorCollapsed).toBe(false);
   });
 
   it("restores editorCollapsed on loadWorkspaces", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveEditorCollapsed(true);
+    const { store, prefs } = makeStore();
+    await prefs.saveEditorCollapsed(true);
     await store.getState().loadWorkspaces();
     expect(store.getState().editorCollapsed).toBe(true);
   });
@@ -1168,17 +1225,17 @@ describe("toggleEditor", () => {
 
 describe("setPanelWidth / setEditorWidth", () => {
   it("updates the width without persisting during a live drag (commit=false)", () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     store.getState().setPanelWidth(300, false);
     expect(store.getState().panelWidth).toBe(300);
-    expect(persistence.savePanelWidth).not.toHaveBeenCalled();
+    expect(prefs.savePanelWidth).not.toHaveBeenCalled();
   });
 
   it("persists the width on commit", () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     store.getState().setEditorWidth(420, true);
     expect(store.getState().editorWidth).toBe(420);
-    expect(persistence.saveEditorWidth).toHaveBeenCalledWith(420);
+    expect(prefs.saveEditorWidth).toHaveBeenCalledWith(420);
   });
 
   it("clamps the width to the panel bounds", () => {
@@ -1190,8 +1247,8 @@ describe("setPanelWidth / setEditorWidth", () => {
   });
 
   it("restores both widths on loadWorkspaces, falling back to defaults", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.savePanelWidth(260);
+    const { store, prefs } = makeStore();
+    await prefs.savePanelWidth(260);
     await store.getState().loadWorkspaces();
     expect(store.getState().panelWidth).toBe(260);
     // editorWidth was never stored → default.
@@ -1244,17 +1301,22 @@ describe("updateBody", () => {
 
 describe("panel root list", () => {
   it("loads cached roots and collapsed flags on loadWorkspaces", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
-    await persistence.saveWorkspace({ id: "b", name: "B", createdAt: 2 });
-    await persistence.saveGraph("a", {
-      nodes: [{ id: "ra", text: "Корень A", position: { x: 0, y: 0 }, parentId: null }],
-      edges: [],
-    });
-    await persistence.saveCollapsedRoots(["b"]);
+    const bundle = makeStore();
+    await seed(bundle, [
+      {
+        id: "a",
+        name: "A",
+        graph: {
+          nodes: [{ id: "ra", text: "Корень A", position: { x: 0, y: 0 }, parentId: null }],
+          edges: [],
+        },
+      },
+      { id: "b", name: "B" },
+    ]);
+    await bundle.prefs.saveCollapsedRoots(["b"]);
 
-    await store.getState().loadWorkspaces();
-    const s = store.getState();
+    await bundle.store.getState().loadWorkspaces();
+    const s = bundle.store.getState();
     expect(s.rootsByWorkspace.get("a")).toEqual([{ id: "ra", text: "Корень A" }]);
     expect(s.collapsedWorkspaceRoots.has("b")).toBe(true);
   });
@@ -1272,17 +1334,17 @@ describe("panel root list", () => {
   });
 
   it("toggleWorkspaceRoots flips membership and persists the set", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     await store.getState().toggleWorkspaceRoots("w");
     expect(store.getState().collapsedWorkspaceRoots.has("w")).toBe(true);
-    expect(persistence.saveCollapsedRoots).toHaveBeenLastCalledWith(["w"]);
+    expect(prefs.saveCollapsedRoots).toHaveBeenLastCalledWith(["w"]);
     await store.getState().toggleWorkspaceRoots("w");
     expect(store.getState().collapsedWorkspaceRoots.has("w")).toBe(false);
-    expect(persistence.saveCollapsedRoots).toHaveBeenLastCalledWith([]);
+    expect(prefs.saveCollapsedRoots).toHaveBeenLastCalledWith([]);
   });
 
   it("prunes a deleted workspace from the roots cache and collapsed set", async () => {
-    const { store, persistence } = makeStore();
+    const { store, prefs } = makeStore();
     await store.getState().createWorkspace();
     const a = store.getState().activeWorkspaceId ?? "";
     await store.getState().commitWorkspaceName(a, "A");
@@ -1294,7 +1356,7 @@ describe("panel root list", () => {
     await store.getState().deleteWorkspace(a);
     expect(store.getState().rootsByWorkspace.has(a)).toBe(false);
     expect(store.getState().collapsedWorkspaceRoots.has(a)).toBe(false);
-    expect(persistence.saveCollapsedRoots).toHaveBeenLastCalledWith([]);
+    expect(prefs.saveCollapsedRoots).toHaveBeenLastCalledWith([]);
   });
 
   it("revealNode bumps a monotone seq even for the same node", () => {
@@ -1338,7 +1400,7 @@ describe("panel root list", () => {
 describe("autosave", () => {
   it("schedules a save whenever the graph reference changes", () => {
     const saver = spySaver();
-    const store = createMindMapStore({ persistence: makePersistence(), createSaver: () => saver });
+    const store = createMindMapStore({ prefs: makePrefs(), createSaver: () => saver });
     store.setState({
       activeWorkspaceId: "ws",
       workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
@@ -1358,7 +1420,12 @@ describe("autosave", () => {
 
   it("flushes pending writes before switching the active workspace", async () => {
     const saver = spySaver();
-    const store = createMindMapStore({ persistence: makePersistence(), createSaver: () => saver });
+    const vault = createVaultStore(createMemoryVaultFs());
+    const store = createMindMapStore({
+      prefs: makePrefs(),
+      resolveVault: () => ({ vault, vaultPath: VAULT_PATH }),
+      createSaver: () => saver,
+    });
     await store.getState().createWorkspace();
     saver.flush.mockClear();
     await store.getState().createWorkspace();
@@ -1367,16 +1434,18 @@ describe("autosave", () => {
 
   it("flush() forwards to the saver", async () => {
     const saver = spySaver();
-    const store = createMindMapStore({ persistence: makePersistence(), createSaver: () => saver });
+    const store = createMindMapStore({ prefs: makePrefs(), createSaver: () => saver });
     await store.getState().flush();
     expect(saver.flush).toHaveBeenCalled();
   });
 
-  it("the save closure targets the active workspace and skips when none is active", async () => {
-    const persistence = makePersistence();
+  it("the save closure targets the active space and skips when none is active", async () => {
+    const vault = createVaultStore(createMemoryVaultFs());
+    const applySpy = vi.spyOn(vault, "applyDiff");
     let save: (graph: Graph) => Promise<void> = async () => {};
     const store = createMindMapStore({
-      persistence,
+      prefs: makePrefs(),
+      resolveVault: () => ({ vault, vaultPath: VAULT_PATH }),
       createSaver: (fn) => {
         save = fn;
         return spySaver();
@@ -1384,25 +1453,25 @@ describe("autosave", () => {
     });
     const graph: Graph = { nodes: [], edges: [] };
     await save(graph);
-    expect(persistence.saveGraph).not.toHaveBeenCalled();
+    expect(applySpy).not.toHaveBeenCalled();
 
     store.setState({
       activeWorkspaceId: "ws",
       workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
     });
     await save(graph);
-    expect(persistence.saveGraph).toHaveBeenCalledWith("ws", graph);
+    expect(applySpy).toHaveBeenCalled();
   });
 });
 
 describe("toggleCollapse and collapse interactions", () => {
-  function seededStore(): { store: MindMapStore; persistence: FakePersistence } {
-    const { store, persistence } = makeStore();
+  function seededStore(): { store: MindMapStore; fs: MemoryVaultFs } {
+    const { store, fs } = makeStore();
     store.setState({
       activeWorkspaceId: "ws",
       workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
     });
-    return { store, persistence };
+    return { store, fs };
   }
 
   /** Build root → childA → grandchild and leave editing committed. */
@@ -1435,15 +1504,16 @@ describe("toggleCollapse and collapse interactions", () => {
     expect(store.getState().collapsedNodeIds.has(root)).toBe(false);
   });
 
-  it("persists the collapsed set for the active workspace on toggle", () => {
-    const { store, persistence } = seededStore();
+  it("persists the collapsed set for the active workspace on toggle", async () => {
+    const { store, fs } = seededStore();
     const { root } = tree(store);
     store.getState().toggleCollapse(root);
-    expect(persistence.saveCollapsedNodes).toHaveBeenCalledWith("ws", [root]);
+    await store.getState().flush();
+    expect(await readCollapsedFromFs(fs, "W")).toEqual([root]);
   });
 
-  it("collapses without persisting when no workspace is active", () => {
-    const { store, persistence } = makeStore();
+  it("collapses without persisting when no workspace is active", async () => {
+    const { store, fs } = makeStore();
     store.setState({
       graph: {
         nodes: [
@@ -1455,7 +1525,9 @@ describe("toggleCollapse and collapse interactions", () => {
     });
     store.getState().toggleCollapse("p");
     expect(store.getState().collapsedNodeIds.has("p")).toBe(true);
-    expect(persistence.saveCollapsedNodes).not.toHaveBeenCalled();
+    await store.getState().flush();
+    // With no active workspace the save closure is a no-op — nothing is written.
+    expect(fs.snapshot().size).toBe(0);
   });
 
   it("moves the selection up to the collapsed node when it hides the selection", () => {
@@ -1518,31 +1590,182 @@ describe("toggleCollapse and collapse interactions", () => {
   });
 
   it("restores the collapsed set when entering a workspace", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
-    await persistence.saveGraph("a", {
-      nodes: [
-        { id: "n", text: "N", position: { x: 0, y: 0 }, parentId: null },
-        { id: "c", text: "C", position: { x: 100, y: 0 }, parentId: "n" },
+    const bundle = makeStore();
+    await seed(
+      bundle,
+      [
+        {
+          id: "a",
+          name: "A",
+          graph: {
+            nodes: [
+              { id: "n", text: "N", position: { x: 0, y: 0 }, parentId: null },
+              { id: "c", text: "C", position: { x: 100, y: 0 }, parentId: "n" },
+            ],
+            edges: [{ id: "e", source: "n", target: "c" }],
+          },
+          collapsed: ["n"],
+        },
       ],
-      edges: [{ id: "e", source: "n", target: "c" }],
-    });
-    await persistence.saveActiveWorkspaceId("a");
-    await persistence.saveCollapsedNodes("a", ["n"]);
-    await store.getState().loadWorkspaces();
-    expect([...store.getState().collapsedNodeIds]).toEqual(["n"]);
+      "a",
+    );
+    await bundle.store.getState().loadWorkspaces();
+    expect([...bundle.store.getState().collapsedNodeIds]).toEqual(["n"]);
   });
 
   it("restores each workspace's own collapsed set when switching", async () => {
-    const { store, persistence } = makeStore();
-    await persistence.saveWorkspace({ id: "a", name: "A", createdAt: 1 });
-    await persistence.saveWorkspace({ id: "b", name: "B", createdAt: 2 });
-    await persistence.saveActiveWorkspaceId("a");
-    await persistence.saveCollapsedNodes("b", ["bn"]);
+    const bundle = makeStore();
+    await seed(
+      bundle,
+      [
+        { id: "a", name: "A" },
+        {
+          id: "b",
+          name: "B",
+          graph: {
+            nodes: [
+              { id: "bn", text: "BN", position: { x: 0, y: 0 }, parentId: null },
+              { id: "bc", text: "BC", position: { x: 100, y: 0 }, parentId: "bn" },
+            ],
+            edges: [{ id: "be", source: "bn", target: "bc" }],
+          },
+          collapsed: ["bn"],
+        },
+      ],
+      "a",
+    );
+    await bundle.store.getState().loadWorkspaces();
+    expect([...bundle.store.getState().collapsedNodeIds]).toEqual([]);
+    await bundle.store.getState().selectWorkspace("b");
+    expect([...bundle.store.getState().collapsedNodeIds]).toEqual(["bn"]);
+  });
+});
+
+describe("createWorkspace without a vault", () => {
+  it("is a no-op when no vault is open", async () => {
+    const store = createMindMapStore({
+      prefs: makePrefs(),
+      resolveVault: () => ({ vault: null, vaultPath: null }),
+    });
+    await store.getState().createWorkspace();
+    expect(store.getState().workspaces).toEqual([]);
+  });
+
+  it("disambiguates the folders of several uncommitted workspaces", async () => {
+    const { store, vault } = makeStore();
+    await store.getState().createWorkspace();
+    await store.getState().createWorkspace();
+    await store.getState().createWorkspace();
+    const names = (await vault.loadSpaces()).map((s) => s.name);
+    expect(new Set(names).size).toBe(3);
+    expect(names).toContain(`${DEFAULT_WORKSPACE_NAME} (3)`);
+  });
+
+  it("ignores deleting an unknown workspace id", async () => {
+    const { store } = makeStore();
+    await store.getState().deleteWorkspace("ghost");
+    expect(store.getState().workspaces).toEqual([]);
+  });
+
+  it("operates without a per-vault prefs path", async () => {
+    const vault = createVaultStore(createMemoryVaultFs());
+    const store = createMindMapStore({
+      prefs: makePrefs(),
+      resolveVault: () => ({ vault, vaultPath: null }),
+      createSaver: (save) => writingSaver(save),
+    });
+    await store.getState().createWorkspace();
+    await store.getState().commitWorkspaceName(store.getState().activeWorkspaceId ?? "", "A");
+    await store.getState().createWorkspace();
+    await store.getState().commitWorkspaceName(store.getState().activeWorkspaceId ?? "", "B");
+    // loadWorkspaces / selectWorkspace / deleteWorkspace all tolerate a null path.
     await store.getState().loadWorkspaces();
-    expect([...store.getState().collapsedNodeIds]).toEqual([]);
-    await store.getState().selectWorkspace("b");
-    expect([...store.getState().collapsedNodeIds]).toEqual(["bn"]);
+    expect(store.getState().workspaces).toHaveLength(2);
+    await store.getState().selectWorkspace(store.getState().workspaces[1]?.id ?? "");
+    await store.getState().deleteWorkspace(store.getState().activeWorkspaceId ?? "");
+    await store.getState().deleteWorkspace(store.getState().activeWorkspaceId ?? "");
+    expect(store.getState().activeWorkspaceId).toBeNull();
+  });
+});
+
+describe("workspace actions with no vault open", () => {
+  function nullVaultStore(): MindMapStore {
+    return createMindMapStore({
+      prefs: makePrefs(),
+      resolveVault: () => ({ vault: null, vaultPath: null }),
+      createSaver: (save) => writingSaver(save),
+    });
+  }
+
+  it("commits a rename in state without a vault", async () => {
+    const store = nullVaultStore();
+    store.setState({
+      workspaces: [{ id: "x", name: "Old", createdAt: 0 }],
+      editingWorkspaceId: "x",
+    });
+    await store.getState().commitWorkspaceName("x", "New");
+    expect(store.getState().workspaces[0]?.name).toBe("New");
+  });
+
+  it("defaults a fresh name to the constant when no folder was tracked", async () => {
+    const store = nullVaultStore();
+    store.setState({ workspaces: [{ id: "x", name: "", createdAt: 0 }], editingWorkspaceId: "x" });
+    await store.getState().cancelWorkspaceName("x");
+    expect(store.getState().workspaces[0]?.name).toBe(DEFAULT_WORKSPACE_NAME);
+  });
+
+  it("deletes the active workspace and enters its neighbor without a vault", async () => {
+    const store = nullVaultStore();
+    store.setState({
+      workspaces: [
+        { id: "x", name: "X", createdAt: 0 },
+        { id: "y", name: "Y", createdAt: 0 },
+      ],
+      activeWorkspaceId: "x",
+    });
+    await store.getState().deleteWorkspace("x");
+    // Neighbor `y` is entered through the no-vault branch (empty graph).
+    expect(store.getState().activeWorkspaceId).toBe("y");
+    expect(store.getState().graph.nodes).toEqual([]);
+  });
+
+  it("loads into an empty state when no vault is open", async () => {
+    const store = nullVaultStore();
+    await store.getState().loadWorkspaces();
+    expect(store.getState().workspaces).toEqual([]);
+    expect(store.getState().activeWorkspaceId).toBeNull();
+  });
+
+  it("defaults a fresh untracked name on an empty commit without a vault", async () => {
+    const store = nullVaultStore();
+    store.setState({ workspaces: [{ id: "x", name: "", createdAt: 0 }], editingWorkspaceId: "x" });
+    await store.getState().commitWorkspaceName("x", "");
+    expect(store.getState().workspaces[0]?.name).toBe(DEFAULT_WORKSPACE_NAME);
+  });
+});
+
+describe("defaultResolveVault", () => {
+  function setTauri(present: boolean): void {
+    const w = window as unknown as Record<string, unknown>;
+    if (present) {
+      w.__TAURI_INTERNALS__ = {};
+    } else {
+      delete w.__TAURI_INTERNALS__;
+    }
+  }
+
+  it("opens the last vault over the filesystem inside Tauri", () => {
+    setTauri(true);
+    expect(defaultResolveVault("/v")).toEqual({ vault: expect.anything(), vaultPath: "/v" });
+    expect(defaultResolveVault(null)).toEqual({ vault: null, vaultPath: null });
+    setTauri(false);
+  });
+
+  it("uses a localStorage-backed vault in the web build", () => {
+    setTauri(false);
+    const resolved = defaultResolveVault(null);
+    expect(resolved.vault).not.toBeNull();
+    expect(resolved.vaultPath).toBe(WEB_VAULT_PATH);
   });
 });
 

@@ -3,8 +3,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DB_NAME } from "./persistence/db";
-import { saveActiveWorkspaceId, saveWorkspace } from "./persistence/repository";
-import { mindMapStore } from "./store/mindmap-store";
+import { saveActiveWorkspaceId } from "./persistence/repository";
+import { createLocalStorageVaultFs } from "./persistence/vault/vault-fs";
+import { createVaultStore } from "./persistence/vault/vault-store";
+import { mindMapStore, WEB_VAULT_PATH, WEB_VAULT_STORAGE_KEY } from "./store/mindmap-store";
 
 async function resetDb(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -17,8 +19,12 @@ async function resetDb(): Promise<void> {
 
 beforeEach(async () => {
   await resetDb();
-  await saveWorkspace({ id: "ws", name: "Пространство", createdAt: 0 });
-  await saveActiveWorkspaceId("ws");
+  localStorage.clear();
+  // Seed the web (localStorage) vault with one space the app will restore on mount.
+  const vault = createVaultStore(createLocalStorageVaultFs(WEB_VAULT_STORAGE_KEY));
+  await vault.createSpace("Пространство");
+  await vault.saveSpaces([{ id: "ws", name: "Пространство" }]);
+  await saveActiveWorkspaceId(WEB_VAULT_PATH, "ws");
 });
 
 afterEach(async () => {
@@ -35,6 +41,7 @@ afterEach(async () => {
     mindMapStore.getState().stopEditing();
   });
   await resetDb();
+  localStorage.clear();
 });
 
 describe("App", () => {

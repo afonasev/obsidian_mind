@@ -4,10 +4,15 @@ import { appendChildY, LAYOUT_HSTEP, LAYOUT_VSTEP, layout, sideOf } from "../dom
 import type { NavEntry } from "../domain/nav-history";
 import * as navHistory from "../domain/nav-history";
 import type { Graph, NodeId, NodeNameStyle, Position } from "../domain/types";
+import type { SpaceMeta } from "../domain/vault/model";
+import { diffFiles, spaceDesiredFiles } from "../domain/vault/space-mapping";
 import type { PanelRoot, Workspace } from "../domain/workspaces";
 import * as workspaceOps from "../domain/workspaces";
 import { createDebouncedSaver, type DebouncedSaver } from "../persistence/debounced-saver";
 import * as repository from "../persistence/repository";
+import { createFsVaultFs, createLocalStorageVaultFs } from "../persistence/vault/vault-fs";
+import { createVaultStore, type VaultStore } from "../persistence/vault/vault-store";
+import { isTauri } from "../vault/fs-bridge";
 
 // Upper bound on the undo/redo depth. Snapshots are immutable graph references
 // (no cloning), so the cost is one array slot per step — but we still cap it so
@@ -34,15 +39,15 @@ interface History {
   readonly future: readonly Graph[];
 }
 
-/** Everything the store reads/writes through the persistence layer. */
-export interface MindMapPersistence {
-  loadGraph(workspaceId: string): Promise<Graph | null>;
-  saveGraph(workspaceId: string, graph: Graph): Promise<void>;
-  loadWorkspaces(): Promise<readonly Workspace[]>;
-  saveWorkspace(workspace: Workspace): Promise<void>;
-  deleteWorkspace(workspaceId: string): Promise<void>;
-  loadActiveWorkspaceId(): Promise<string | null>;
-  saveActiveWorkspaceId(workspaceId: string | null): Promise<void>;
+/**
+ * App settings the store reads/writes through IndexedDB (the `repository`). Content
+ * (graphs, spaces, collapsed nodes) is NOT here — it lives in vault files via the
+ * `VaultStore` port. The active workspace is keyed per vault path.
+ */
+export interface AppPrefs {
+  loadLastVaultPath(): Promise<string | null>;
+  loadActiveWorkspaceId(vaultPath: string): Promise<string | null>;
+  saveActiveWorkspaceId(vaultPath: string, workspaceId: string | null): Promise<void>;
   loadPanelCollapsed(): Promise<boolean>;
   savePanelCollapsed(collapsed: boolean): Promise<void>;
   loadEditorCollapsed(): Promise<boolean>;
@@ -51,12 +56,37 @@ export interface MindMapPersistence {
   savePanelWidth(width: number): Promise<void>;
   loadEditorWidth(): Promise<number | null>;
   saveEditorWidth(width: number): Promise<void>;
-  loadAllRoots(): Promise<Map<string, readonly PanelRoot[]>>;
   loadCollapsedRoots(): Promise<readonly string[]>;
   saveCollapsedRoots(ids: readonly string[]): Promise<void>;
-  // Per-workspace set of collapsed node ids (view state, outside the graph/undo).
-  loadCollapsedNodes(workspaceId: string): Promise<readonly NodeId[]>;
-  saveCollapsedNodes(workspaceId: string, ids: readonly NodeId[]): Promise<void>;
+}
+
+/** A resolved vault: its content store and the path used for per-vault prefs. */
+export interface ResolvedVault {
+  readonly vault: VaultStore | null;
+  readonly vaultPath: string | null;
+}
+
+// localStorage key + sentinel path for the web build's persisted vault. The web
+// build (preview/e2e) has no filesystem, so content lives in localStorage and the
+// active workspace is keyed under this fixed path.
+export const WEB_VAULT_STORAGE_KEY = "obsidian-mind-web-vault";
+export const WEB_VAULT_PATH = "web";
+
+/**
+ * Default vault resolution: in Tauri, open the last vault path over the real FS (or
+ * none when no path is set yet — opening a vault is `vault-open-refresh`); in the
+ * web build, a localStorage-backed vault so content survives a reload.
+ */
+export function defaultResolveVault(lastVaultPath: string | null): ResolvedVault {
+  if (isTauri()) {
+    return lastVaultPath !== null
+      ? { vault: createVaultStore(createFsVaultFs(lastVaultPath)), vaultPath: lastVaultPath }
+      : { vault: null, vaultPath: null };
+  }
+  return {
+    vault: createVaultStore(createLocalStorageVaultFs(WEB_VAULT_STORAGE_KEY)),
+    vaultPath: WEB_VAULT_PATH,
+  };
 }
 
 export interface MindMapState {
@@ -155,7 +185,10 @@ export interface MindMapState {
 export type MindMapStore = StoreApi<MindMapState>;
 
 interface CreateMindMapStoreOptions {
-  readonly persistence?: MindMapPersistence;
+  readonly prefs?: AppPrefs;
+  // Resolve the active vault from the last vault path (tests inject an in-memory
+  // VaultStore here). Defaults to FS-in-Tauri / localStorage-in-web.
+  readonly resolveVault?: (lastVaultPath: string | null) => ResolvedVault;
   readonly createSaver?: (save: (graph: Graph) => Promise<void>) => DebouncedSaver;
 }
 
@@ -168,11 +201,56 @@ const rootsFromGraph = (graph: Graph): readonly PanelRoot[] =>
     .filter((node) => node.parentId === null)
     .map((node) => ({ id: node.id, text: node.text }));
 
+/** A vault space as a panel workspace (no createdAt — order comes from the vault). */
+const toWorkspace = (space: SpaceMeta): Workspace => ({
+  id: space.id,
+  name: space.name,
+  createdAt: 0,
+});
+
+/** `base`, or `base (2)`, `base (3)`… until it is not already taken. */
+function uniqueName(base: string, taken: readonly string[]): string {
+  const set = new Set(taken);
+  if (!set.has(base)) {
+    return base;
+  }
+  let n = 2;
+  while (set.has(`${base} (${n})`)) {
+    n += 1;
+  }
+  return `${base} (${n})`;
+}
+
 const EMPTY_HISTORY: History = { past: [], future: [] };
 
 export function createMindMapStore(options: CreateMindMapStoreOptions = {}): MindMapStore {
-  const persistence: MindMapPersistence = options.persistence ?? repository;
+  const prefs: AppPrefs = options.prefs ?? repository;
+  const resolveVault = options.resolveVault ?? defaultResolveVault;
   const createSaver = options.createSaver ?? createDebouncedSaver;
+
+  // The active vault's content store and its prefs path, resolved on loadWorkspaces.
+  // `lastWritten` caches the active space's on-disk files so the debounced saver
+  // writes only what changed (design: diff affected files). The vault is resolved
+  // eagerly (without a path) so it is available before loadWorkspaces runs;
+  // loadWorkspaces re-resolves it once the stored vault path is read.
+  let { vault, vaultPath } = resolveVault(null);
+  let lastWritten = new Map<string, string>();
+  // Provisional folder names of freshly created (still nameless) workspaces, by id.
+  // A fresh workspace shows an empty name in the panel but its folder already exists
+  // on disk under this name; commit/cancel/delete settles it. Keyed by id so several
+  // uncommitted workspaces never collide on one shared name.
+  const freshFolders = new Map<string, string>();
+
+  /** Map a workspace to its space (folder name); a fresh one uses its provisional folder. */
+  function spaceMetaOf(workspace: Workspace): SpaceMeta {
+    return {
+      id: workspace.id,
+      name:
+        workspace.name === ""
+          ? (freshFolders.get(workspace.id) ?? DEFAULT_WORKSPACE_NAME)
+          : workspace.name,
+    };
+  }
 
   // Transient bookkeeping kept out of zustand state: changing it must not trigger
   // re-renders, and it never needs to be read by the UI.
@@ -233,14 +311,6 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       return layout(graph, get().collapsedNodeIds);
     }
 
-    /** Persist the collapsed set for the active workspace; a no-op with none active. */
-    function persistCollapsed(ids: ReadonlySet<NodeId>): void {
-      const workspaceId = get().activeWorkspaceId;
-      if (workspaceId !== null) {
-        void persistence.saveCollapsedNodes(workspaceId, [...ids]);
-      }
-    }
-
     /**
      * Expand every collapsed ancestor of `nodeId` so it becomes visible (used by
      * reveal). Re-flows and persists only when something actually changed.
@@ -259,7 +329,6 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       }
       if (changed) {
         set({ collapsedNodeIds: next, graph: layout(state.graph, next) });
-        persistCollapsed(next);
       }
     }
 
@@ -285,23 +354,33 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       }
     }
 
-    /** Make `workspace` the active one, loading its graph and restoring its history. */
+    /** Make `workspace` the active one, reading its graph from the vault. */
     async function enterWorkspace(workspaceId: string): Promise<void> {
-      const loaded = await persistence.loadGraph(workspaceId);
-      const collapsed = await persistence.loadCollapsedNodes(workspaceId);
+      const workspace = get().workspaces.find((w) => w.id === workspaceId);
+      const space = workspace !== undefined ? spaceMetaOf(workspace) : null;
+      const result =
+        vault !== null && space !== null
+          ? await vault.readSpace(space)
+          : { graph: graphOps.createEmpty(), collapsed: new Set<NodeId>(), roots: [] };
+      lastWritten =
+        vault !== null && space !== null
+          ? spaceDesiredFiles(space, result.graph, result.collapsed)
+          : new Map();
       const restored = histories.get(workspaceId) ?? EMPTY_HISTORY;
       clearTransient();
       set({
-        graph: loaded ?? graphOps.createEmpty(),
+        graph: result.graph,
         activeWorkspaceId: workspaceId,
-        collapsedNodeIds: new Set(collapsed),
+        collapsedNodeIds: new Set(result.collapsed),
         past: restored.past,
         future: restored.future,
         selectedNodeId: null,
         editingNodeId: null,
         editingWorkspaceId: null,
       });
-      await persistence.saveActiveWorkspaceId(workspaceId);
+      if (vaultPath !== null) {
+        await prefs.saveActiveWorkspaceId(vaultPath, workspaceId);
+      }
     }
 
     /**
@@ -404,35 +483,55 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
 
       async loadWorkspaces() {
         const [
-          workspaces,
-          storedActiveId,
           panelCollapsed,
           editorCollapsed,
           storedPanelWidth,
           storedEditorWidth,
-          rootsByWorkspace,
           collapsedRoots,
+          lastVaultPath,
         ] = await Promise.all([
-          persistence.loadWorkspaces(),
-          persistence.loadActiveWorkspaceId(),
-          persistence.loadPanelCollapsed(),
-          persistence.loadEditorCollapsed(),
-          persistence.loadPanelWidth(),
-          persistence.loadEditorWidth(),
-          persistence.loadAllRoots(),
-          persistence.loadCollapsedRoots(),
+          prefs.loadPanelCollapsed(),
+          prefs.loadEditorCollapsed(),
+          prefs.loadPanelWidth(),
+          prefs.loadEditorWidth(),
+          prefs.loadCollapsedRoots(),
+          prefs.loadLastVaultPath(),
         ]);
-        // A stored active id that no longer exists (deleted) falls back to "none".
-        const activeWorkspaceId =
-          storedActiveId !== null && workspaces.some((w) => w.id === storedActiveId)
-            ? storedActiveId
-            : null;
-        const graph =
-          activeWorkspaceId !== null
-            ? ((await persistence.loadGraph(activeWorkspaceId)) ?? graphOps.createEmpty())
-            : graphOps.createEmpty();
-        const collapsedNodes =
-          activeWorkspaceId !== null ? await persistence.loadCollapsedNodes(activeWorkspaceId) : [];
+        const resolved = resolveVault(lastVaultPath);
+        vault = resolved.vault;
+        vaultPath = resolved.vaultPath;
+
+        let workspaces: readonly Workspace[] = [];
+        let activeWorkspaceId: string | null = null;
+        let graph = graphOps.createEmpty();
+        let collapsedNodes: readonly NodeId[] = [];
+        const rootsByWorkspace = new Map<string, readonly PanelRoot[]>();
+        lastWritten = new Map();
+
+        if (vault !== null) {
+          const spaces = await vault.loadSpaces();
+          workspaces = spaces.map(toWorkspace);
+          const stored = vaultPath !== null ? await prefs.loadActiveWorkspaceId(vaultPath) : null;
+          // Restore the stored active space, else default to the first one so the
+          // canvas shows content (spec: render the active space's graph at start).
+          activeWorkspaceId =
+            stored !== null && spaces.some((s) => s.id === stored)
+              ? stored
+              : (spaces[0]?.id ?? null);
+          for (const space of spaces) {
+            const result = await vault.readSpace(space);
+            rootsByWorkspace.set(space.id, rootsFromGraph(result.graph));
+            if (space.id === activeWorkspaceId) {
+              graph = result.graph;
+              collapsedNodes = [...result.collapsed];
+              lastWritten = spaceDesiredFiles(space, result.graph, result.collapsed);
+            }
+          }
+          if (vaultPath !== null && activeWorkspaceId !== stored) {
+            await prefs.saveActiveWorkspaceId(vaultPath, activeWorkspaceId);
+          }
+        }
+
         clearTransient();
         histories.clear();
         set({
@@ -458,26 +557,41 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       },
 
       async createWorkspace() {
+        // A workspace is a vault folder; with no vault open there is nowhere to
+        // create it (opening a vault is `vault-open-refresh`).
+        if (vault === null) {
+          return;
+        }
         await leaveActiveWorkspace();
-        const workspace: Workspace = {
-          id: crypto.randomUUID(),
-          name: "",
-          createdAt: Date.now(),
-        };
+        const workspace: Workspace = { id: crypto.randomUUID(), name: "", createdAt: 0 };
+        // The folder needs a name now, but the panel shows an empty editable name:
+        // create the folder under a provisional default, renamed on commit. Unique
+        // against existing folders (committed names and other fresh ones).
+        const folder = uniqueName(
+          DEFAULT_WORKSPACE_NAME,
+          get().workspaces.map((w) => spaceMetaOf(w).name),
+        );
+        freshFolders.set(workspace.id, folder);
+        await vault.createSpace(folder);
+        const workspaces = workspaceOps.createWorkspace(get().workspaces, workspace);
         clearTransient();
+        lastWritten = new Map();
         set({
-          workspaces: workspaceOps.createWorkspace(get().workspaces, workspace),
+          workspaces,
           activeWorkspaceId: workspace.id,
           editingWorkspaceId: workspace.id,
           graph: graphOps.createEmpty(),
           collapsedNodeIds: new Set(),
+          rootsByWorkspace: new Map(get().rootsByWorkspace).set(workspace.id, []),
           past: [],
           future: [],
           selectedNodeId: null,
           editingNodeId: null,
         });
-        await persistence.saveWorkspace(workspace);
-        await persistence.saveActiveWorkspaceId(workspace.id);
+        await vault.saveSpaces(workspaces.map(spaceMetaOf));
+        if (vaultPath !== null) {
+          await prefs.saveActiveWorkspaceId(vaultPath, workspace.id);
+        }
       },
 
       async commitWorkspaceName(id, name) {
@@ -489,30 +603,50 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         // A freshly created workspace still carries an empty name; renaming an
         // existing one to empty is rejected, but a fresh one defaults instead.
         const isFresh = workspace.name === "";
-        const finalName = name.trim() === "" ? (isFresh ? DEFAULT_WORKSPACE_NAME : null) : name;
-        if (finalName === null) {
+        const requested =
+          name.trim() === "" ? (isFresh ? DEFAULT_WORKSPACE_NAME : null) : name.trim();
+        if (requested === null) {
           set({ editingWorkspaceId: null });
           return;
         }
-        const updated: Workspace = { ...workspace, name: finalName };
-        set({
-          workspaces: workspaceOps.renameWorkspace(get().workspaces, id, finalName),
-          editingWorkspaceId: null,
-        });
-        await persistence.saveWorkspace(updated);
+        // The display name equals the folder name, kept unique among siblings.
+        const others = get()
+          .workspaces.filter((w) => w.id !== id)
+          .map((w) => spaceMetaOf(w).name);
+        const finalName = uniqueName(requested, others);
+        const oldFolder = isFresh ? (freshFolders.get(id) ?? null) : workspace.name;
+        if (vault !== null && oldFolder !== null && oldFolder !== finalName) {
+          await vault.renameSpace(oldFolder, finalName);
+          if (id === get().activeWorkspaceId) {
+            // Files moved on disk; remap the write-cache to the new paths so the
+            // next save diffs minimally rather than rewriting the whole space.
+            lastWritten = spaceDesiredFiles(
+              { id, name: finalName },
+              get().graph,
+              get().collapsedNodeIds,
+            );
+          }
+        }
+        freshFolders.delete(id);
+        const workspaces = workspaceOps.renameWorkspace(get().workspaces, id, finalName);
+        set({ workspaces, editingWorkspaceId: null });
+        if (vault !== null) {
+          await vault.saveSpaces(workspaces.map(spaceMetaOf));
+        }
       },
 
       async cancelWorkspaceName(id) {
         const workspace = get().workspaces.find((w) => w.id === id);
         // Leaving a fresh (still nameless) workspace must not strand it without a
-        // name — fall back to the default; an existing one just keeps its name.
+        // name — its folder already exists under the provisional name; adopt that.
         if (workspace !== undefined && workspace.name === "") {
-          const updated: Workspace = { ...workspace, name: DEFAULT_WORKSPACE_NAME };
-          set({
-            workspaces: workspaceOps.renameWorkspace(get().workspaces, id, DEFAULT_WORKSPACE_NAME),
-            editingWorkspaceId: null,
-          });
-          await persistence.saveWorkspace(updated);
+          const finalName = freshFolders.get(id) ?? DEFAULT_WORKSPACE_NAME;
+          freshFolders.delete(id);
+          const workspaces = workspaceOps.renameWorkspace(get().workspaces, id, finalName);
+          set({ workspaces, editingWorkspaceId: null });
+          if (vault !== null) {
+            await vault.saveSpaces(workspaces.map(spaceMetaOf));
+          }
           return;
         }
         set({ editingWorkspaceId: null });
@@ -526,8 +660,13 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         // Flush first: a leftover pending write would otherwise resurrect the
         // graph we are about to delete (or land under the next active id).
         await saver.flush();
+        const workspace = get().workspaces.find((w) => w.id === id);
+        const folder = workspace === undefined ? null : spaceMetaOf(workspace).name;
         const wasActive = get().activeWorkspaceId === id;
         const neighbor = wasActive ? workspaceOps.neighborOf(get().workspaces, id) : null;
+        if (workspace?.name === "") {
+          freshFolders.delete(id);
+        }
         histories.delete(id);
         // Purge the deleted workspace's focus points so navigation never lands on
         // a vanished workspace; the cursor is moved onto a surviving entry.
@@ -539,18 +678,24 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         nextRoots.delete(id);
         const nextCollapsed = new Set(get().collapsedWorkspaceRoots);
         const wasCollapsed = nextCollapsed.delete(id);
+        const workspaces = workspaceOps.removeWorkspace(get().workspaces, id);
         set({
-          workspaces: workspaceOps.removeWorkspace(get().workspaces, id),
+          workspaces,
           editingWorkspaceId: get().editingWorkspaceId === id ? null : get().editingWorkspaceId,
           navHistory: pruned.history,
           navCursor: pruned.cursor,
           rootsByWorkspace: nextRoots,
           collapsedWorkspaceRoots: nextCollapsed,
         });
-        await persistence.deleteWorkspace(id);
+        if (vault !== null) {
+          if (folder !== null) {
+            await vault.deleteSpace(folder);
+          }
+          await vault.saveSpaces(workspaces.map(spaceMetaOf));
+        }
         // Drop the collapsed flag from storage too, so a recreated id is not stale.
         if (wasCollapsed) {
-          await persistence.saveCollapsedRoots([...nextCollapsed]);
+          await prefs.saveCollapsedRoots([...nextCollapsed]);
         }
         if (!wasActive) {
           return;
@@ -561,6 +706,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         }
         // Deleted the last (or only) workspace — drop into the empty state.
         clearTransient();
+        lastWritten = new Map();
         set({
           graph: graphOps.createEmpty(),
           activeWorkspaceId: null,
@@ -570,7 +716,9 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           selectedNodeId: null,
           editingNodeId: null,
         });
-        await persistence.saveActiveWorkspaceId(null);
+        if (vaultPath !== null) {
+          await prefs.saveActiveWorkspaceId(vaultPath, null);
+        }
       },
 
       async selectWorkspace(id) {
@@ -584,20 +732,20 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       async togglePanel() {
         const next = !get().panelCollapsed;
         set({ panelCollapsed: next });
-        await persistence.savePanelCollapsed(next);
+        await prefs.savePanelCollapsed(next);
       },
 
       async toggleEditor() {
         const next = !get().editorCollapsed;
         set({ editorCollapsed: next });
-        await persistence.saveEditorCollapsed(next);
+        await prefs.saveEditorCollapsed(next);
       },
 
       setPanelWidth(width, commit) {
         const next = clamp(width, MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
         set({ panelWidth: next });
         if (commit) {
-          void persistence.savePanelWidth(next);
+          void prefs.savePanelWidth(next);
         }
       },
 
@@ -605,7 +753,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         const next = clamp(width, MIN_EDITOR_WIDTH, MAX_EDITOR_WIDTH);
         set({ editorWidth: next });
         if (commit) {
-          void persistence.saveEditorWidth(next);
+          void prefs.saveEditorWidth(next);
         }
       },
 
@@ -615,7 +763,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           next.add(id);
         }
         set({ collapsedWorkspaceRoots: next });
-        await persistence.saveCollapsedRoots([...next]);
+        await prefs.saveCollapsedRoots([...next]);
       },
 
       toggleCollapse(nodeId) {
@@ -642,7 +790,6 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         // Re-flow with the new set but outside undo: only positions change, and the
         // graph-reference change still triggers the debounced graph autosave.
         set({ collapsedNodeIds: next, graph: layout(state.graph, next), selectedNodeId });
-        persistCollapsed(next);
       },
 
       revealNode(nodeId) {
@@ -715,7 +862,6 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           const next = new Set(get().collapsedNodeIds);
           next.delete(nodeId);
           set({ collapsedNodeIds: next });
-          persistCollapsed(next);
         }
         get().addChild({ parentId: nodeId, position });
       },
@@ -767,7 +913,6 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
             pruned.delete(id);
           }
           collapsedNodeIds = pruned;
-          persistCollapsed(pruned);
         }
         set({
           graph: next,
@@ -1013,13 +1158,27 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
     };
   });
 
-  // The save closure resolves the target workspace at write time. Combined with
-  // the flush-before-switch in leaveActiveWorkspace/deleteWorkspace, the graph
-  // always lands under the workspace that owned it.
-  saver = createSaver((graph) => {
-    const id = store.getState().activeWorkspaceId;
-    return id === null ? Promise.resolve() : persistence.saveGraph(id, graph);
-  });
+  /**
+   * Persist the active space: serialize its graph + collapsed set to the desired
+   * files, diff against the last-written set, and apply only the changes. Resolves
+   * the target space at write time; combined with flush-before-switch, the files
+   * always land under the space that owned them.
+   */
+  function saveActiveSpace(graph: Graph): Promise<void> {
+    const state = store.getState();
+    const id = state.activeWorkspaceId;
+    const workspace = id === null ? undefined : state.workspaces.find((w) => w.id === id);
+    if (vault === null || workspace === undefined) {
+      return Promise.resolve();
+    }
+    const desired = spaceDesiredFiles(spaceMetaOf(workspace), graph, state.collapsedNodeIds);
+    const diff = diffFiles(lastWritten, desired);
+    return vault.applyDiff(diff).then(() => {
+      lastWritten = desired;
+    });
+  }
+
+  saver = createSaver(saveActiveSpace);
 
   // Autosave: schedule a debounced write whenever the graph reference changes.
   // The subscription lives for the store's lifetime — the singleton persists for
