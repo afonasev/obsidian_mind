@@ -15,9 +15,6 @@
   --color-surface-subtle: #f0f0f6;
   --color-node-hover: #f2f4f7;
   --color-body-placeholder-hover: #fafaff;
-  /* Узлы с непустым телом: подложка с заметным холодным (синеватым) оттенком,
-     чтобы отличаться от обычной поверхности (белее белого не сделать). */
-  --color-surface-body: #e1e9fb;
 
   /* Акцент и его мягкие подложки */
   --color-accent: #4f80ff;
@@ -102,9 +99,6 @@
   --color-surface-subtle: #2f303a;
   --color-node-hover: #32333d;
   --color-body-placeholder-hover: #2a2c39;
-  /* Узлы с непустым телом: подложка светлее и с холодным (синеватым) оттенком,
-     чтобы заметно отличаться от обычной поверхности. */
-  --color-surface-body: #3c435c;
 
   /* Акцент и его мягкие подложки */
   --color-accent: #6a93ff;

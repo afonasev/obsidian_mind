@@ -57,10 +57,10 @@
   border-color: var(--color-accent);
 }
 
-/* A node with a non-empty body reads via a slightly lighter surface tint rather
-   than a coloured glow — keeps the normal node shadow, just shifts the fill. */
-.hasBody {
-  background: var(--color-surface-body);
+/* 📝 marker before the name of a node with a non-empty body. A leading cue is used
+   instead of a surface/shadow tint so it stays visible under any user fill colour. */
+.bodyMarker {
+  margin-right: 4px;
 }
 
 .text {

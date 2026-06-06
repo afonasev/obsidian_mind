@@ -492,13 +492,13 @@ describe("CloudNode", () => {
     expect(className).toMatch(/selected/);
   });
 
-  it("marks a node with a body via the hasBody style", () => {
+  it("marks a node with a body via the 📝 marker before the name", () => {
     const id = seedRoot("Идея");
     act(() => {
       mindMapStore.getState().stopEditing();
     });
     render(withProvider(<CloudNode {...makeProps({ id, text: "Идея", hasBody: true })} />));
-    expect(screen.getByTestId(`cloud-node-${id}`).className).toMatch(/hasBody/);
+    expect(screen.getByLabelText("есть заметка")).toHaveTextContent("📝");
   });
 
   it("does not mark a node without a body", () => {
@@ -507,7 +507,7 @@ describe("CloudNode", () => {
       mindMapStore.getState().stopEditing();
     });
     render(withProvider(<CloudNode {...makeProps({ id, text: "Идея", hasBody: false })} />));
-    expect(screen.getByTestId(`cloud-node-${id}`).className).not.toMatch(/hasBody/);
+    expect(screen.queryByLabelText("есть заметка")).toBeNull();
   });
 
   it("does not crash when the + button is clicked for a node that vanished from the store", async () => {

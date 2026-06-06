@@ -42,8 +42,8 @@ export type ChildDirection = "left" | "right";
 
 export interface CloudNodeData extends Record<string, unknown> {
   readonly text: string;
-  // Whether the node has a non-empty markdown body; drives the inner "double border"
-  // indicator. Carried as a flag (not the body itself) — the canvas never needs the text.
+  // Whether the node has a non-empty markdown body; drives the 📝 marker shown before
+  // the name. Carried as a flag (not the body itself) — the canvas never needs the text.
   readonly hasBody: boolean;
 }
 
@@ -96,7 +96,6 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
         isEditing ? styles.editing : "",
         isDropTarget ? styles.dropTarget : "",
         isCollapsed ? styles.collapsed : "",
-        data.hasBody ? styles.hasBody : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -118,7 +117,13 @@ export function CloudNode({ id, data }: CloudNodeProps): JSX.Element {
       {isEditing ? (
         <EditView id={id} bold={bold} italic={italic} fontScale={fontScale} />
       ) : (
-        <TextView text={data.text} bold={bold} italic={italic} fontScale={fontScale} />
+        <TextView
+          text={data.text}
+          hasBody={data.hasBody}
+          bold={bold}
+          italic={italic}
+          fontScale={fontScale}
+        />
       )}
       {showLeft ? <AddChildButton parentId={id} direction="left" /> : null}
       {showRight ? <AddChildButton parentId={id} direction="right" /> : null}
@@ -155,10 +160,11 @@ function nameFontStyle(fontScale: number): CSSProperties | undefined {
 
 function TextView({
   text,
+  hasBody,
   bold,
   italic,
   fontScale,
-}: { readonly text: string } & NameStyleProps): JSX.Element {
+}: { readonly text: string; readonly hasBody: boolean } & NameStyleProps): JSX.Element {
   const className = [
     styles.text,
     nameClassName(bold, italic),
@@ -168,6 +174,18 @@ function TextView({
     .join(" ");
   return (
     <span className={className} style={nameFontStyle(fontScale)} data-testid="cloud-node-text">
+      {/* 📝 before the name marks a node with a non-empty body — a cue that survives
+          any user fill colour, unlike the former background tint. */}
+      {hasBody ? (
+        <span
+          className={styles.bodyMarker}
+          role="img"
+          aria-label="есть заметка"
+          data-testid="cloud-node-body-marker"
+        >
+          📝
+        </span>
+      ) : null}
       {text === "" ? "Без названия" : text}
     </span>
   );
