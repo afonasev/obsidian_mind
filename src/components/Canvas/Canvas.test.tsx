@@ -48,8 +48,10 @@ function resetStore(): void {
     mindMapStore.getState().stopEditing();
     mindMapStore.getState().setDropTarget(null);
     mindMapStore.getState().setDetachCandidate(null);
-    // Node creation is guarded behind an active workspace — seed one for the tests.
+    // Node creation is guarded behind an active workspace — seed one (with an open
+    // vault) for the tests.
     mindMapStore.setState({
+      hasVault: true,
       activeWorkspaceId: "ws",
       workspaces: [{ id: "ws", name: "W", createdAt: 0 }],
       editingWorkspaceId: null,
@@ -165,6 +167,21 @@ describe("Canvas (rendered)", () => {
   it("hides the create-workspace hint when a workspace is active", () => {
     render(<Canvas />);
     expect(screen.queryByText("Создайте пространство, чтобы начать работу")).toBeNull();
+  });
+
+  it("shows the open-vault invitation (not the create hint) and opens a vault on click", async () => {
+    act(() => {
+      mindMapStore.setState({ hasVault: false, activeWorkspaceId: null, workspaces: [] });
+    });
+    const openSpy = vi.spyOn(mindMapStore.getState(), "openVault").mockResolvedValue();
+    render(<Canvas />);
+    expect(screen.getByText("Откройте директорию-vault, чтобы начать работу")).toBeInTheDocument();
+    // The two empty states are distinct: the create-space hint is not shown here.
+    expect(screen.queryByText("Создайте пространство, чтобы начать работу")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Открыть директорию-vault" }));
+    expect(openSpy).toHaveBeenCalled();
+    openSpy.mockRestore();
   });
 
   it("drops descendants of a collapsed node from the rendered canvas", () => {

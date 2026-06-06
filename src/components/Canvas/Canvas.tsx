@@ -38,7 +38,9 @@ function CanvasInner(): JSX.Element {
   const graph = useMindMapStore((state) => state.graph);
   const editingNodeId = useMindMapStore((state) => state.editingNodeId);
   const selectedNodeId = useMindMapStore((state) => state.selectedNodeId);
-  // No active workspace ⇒ there is nowhere to put roots; show a hint instead.
+  // No vault open ⇒ invite the user to open a directory. Vault open but no active
+  // workspace ⇒ there is nowhere to put roots; show the create-space hint instead.
+  const hasVault = useMindMapStore((state) => state.hasVault);
   const hasActiveWorkspace = useMindMapStore((state) => state.activeWorkspaceId !== null);
   const reveal = useMindMapStore((state) => state.reveal);
   const collapsedNodeIds = useMindMapStore((state) => state.collapsedNodeIds);
@@ -48,6 +50,9 @@ function CanvasInner(): JSX.Element {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const handleHelpToggle = useCallback(() => setIsHelpOpen((open) => !open), []);
   const handleHelpClose = useCallback(() => setIsHelpOpen(false), []);
+  const handleOpenVault = useCallback(() => {
+    void mindMapStore.getState().openVault();
+  }, []);
 
   // Ids hidden by collapse: every collapsed node's subtree minus the node itself
   // (the collapsed node stays visible; only its descendants hide).
@@ -159,9 +164,18 @@ function CanvasInner(): JSX.Element {
         </Controls>
       </ReactFlow>
       <FocusNav />
-      {hasActiveWorkspace ? null : (
+      {hasVault ? (
+        hasActiveWorkspace ? null : (
+          <div className={styles.emptyHint} role="note">
+            Создайте пространство, чтобы начать работу
+          </div>
+        )
+      ) : (
         <div className={styles.emptyHint} role="note">
-          Создайте пространство, чтобы начать работу
+          <p className={styles.emptyText}>Откройте директорию-vault, чтобы начать работу</p>
+          <button type="button" className={styles.openVault} onClick={handleOpenVault}>
+            Открыть директорию-vault
+          </button>
         </div>
       )}
       <HotkeysHelp isOpen={isHelpOpen} onClose={handleHelpClose} />

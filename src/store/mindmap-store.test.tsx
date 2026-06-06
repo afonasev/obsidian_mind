@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import { open } from "@tauri-apps/plugin-dialog";
 import { act, render, screen } from "@testing-library/react";
 import type { JSX } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import {
   createMindMapStore,
   DEFAULT_EDITOR_WIDTH,
   DEFAULT_WORKSPACE_NAME,
+  defaultPickVaultPath,
   defaultResolveVault,
   MAX_HISTORY,
   MAX_PANEL_WIDTH,
@@ -23,10 +25,13 @@ import {
   WEB_VAULT_PATH,
 } from "./mindmap-store";
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
 const VAULT_PATH = "test";
 
 type FakePrefs = AppPrefs & {
   loadLastVaultPath: ReturnType<typeof vi.fn>;
+  saveLastVaultPath: ReturnType<typeof vi.fn>;
   loadActiveWorkspaceId: ReturnType<typeof vi.fn>;
   saveActiveWorkspaceId: ReturnType<typeof vi.fn>;
   loadPanelCollapsed: ReturnType<typeof vi.fn>;
@@ -53,6 +58,9 @@ function makePrefs(): FakePrefs {
   };
   return {
     loadLastVaultPath: vi.fn(async () => meta.lastVault),
+    saveLastVaultPath: vi.fn(async (path: string | null) => {
+      meta.lastVault = path;
+    }),
     loadActiveWorkspaceId: vi.fn(async (path: string) => meta.activeId.get(path) ?? null),
     saveActiveWorkspaceId: vi.fn(async (path: string, id: string | null) => {
       meta.activeId.set(path, id);
@@ -1742,6 +1750,133 @@ describe("workspace actions with no vault open", () => {
     await store.getState().commitWorkspaceName("x", "");
     expect(store.getState().workspaces[0]?.name).toBe(DEFAULT_WORKSPACE_NAME);
   });
+
+  it("falls back to the default folder name when deleting a fresh untracked workspace", async () => {
+    const store = nullVaultStore();
+    store.setState({ workspaces: [{ id: "x", name: "", createdAt: 0 }], activeWorkspaceId: "x" });
+    await store.getState().deleteWorkspace("x");
+    expect(store.getState().workspaces).toEqual([]);
+  });
+});
+
+describe("openVault", () => {
+  it("picks a path, stores it and loads the chosen vault", async () => {
+    const fs = createMemoryVaultFs();
+    const vault = createVaultStore(fs);
+    await vault.createSpace("A");
+    await vault.saveSpaces([{ id: "a", name: "A" }]);
+    const prefs = makePrefs();
+    const store = createMindMapStore({
+      prefs,
+      resolveVault: () => ({ vault, vaultPath: VAULT_PATH }),
+      pickVaultPath: async () => "/picked",
+      createSaver: (save) => writingSaver(save),
+    });
+
+    await store.getState().openVault();
+    expect(prefs.saveLastVaultPath).toHaveBeenCalledWith("/picked");
+    expect(store.getState().hasVault).toBe(true);
+    expect(store.getState().workspaces.map((w) => w.name)).toEqual(["A"]);
+  });
+
+  it("is a no-op when the picker is cancelled", async () => {
+    const prefs = makePrefs();
+    const store = createMindMapStore({
+      prefs,
+      resolveVault: () => ({ vault: null, vaultPath: null }),
+      pickVaultPath: async () => null,
+      createSaver: (save) => writingSaver(save),
+    });
+    await store.getState().openVault();
+    expect(prefs.saveLastVaultPath).not.toHaveBeenCalled();
+    expect(store.getState().hasVault).toBe(false);
+  });
+});
+
+describe("defaultPickVaultPath", () => {
+  function setTauri(present: boolean): void {
+    const w = window as unknown as Record<string, unknown>;
+    if (present) {
+      w.__TAURI_INTERNALS__ = {};
+    } else {
+      delete w.__TAURI_INTERNALS__;
+    }
+  }
+
+  it("opens the native folder picker inside Tauri", async () => {
+    setTauri(true);
+    vi.mocked(open).mockResolvedValue("/chosen/vault");
+    try {
+      expect(await defaultPickVaultPath()).toBe("/chosen/vault");
+    } finally {
+      setTauri(false);
+    }
+  });
+
+  it("returns the implicit web vault path outside Tauri", async () => {
+    setTauri(false);
+    expect(await defaultPickVaultPath()).toBe(WEB_VAULT_PATH);
+  });
+});
+
+describe("refreshFromDisk", () => {
+  it("is a no-op when no vault is open", async () => {
+    const store = createMindMapStore({
+      prefs: makePrefs(),
+      resolveVault: () => ({ vault: null, vaultPath: null }),
+      createSaver: (save) => writingSaver(save),
+    });
+    await store.getState().loadWorkspaces();
+    await store.getState().refreshFromDisk();
+    expect(store.getState().workspaces).toEqual([]);
+    expect(store.getState().hasVault).toBe(false);
+  });
+
+  it("flushes and re-reads, adopting an external body change by id", async () => {
+    const bundle = makeStore();
+    const graph: Graph = {
+      nodes: [{ id: "r", text: "Root", position: { x: 0, y: 0 }, parentId: null }],
+      edges: [],
+    };
+    await seed(bundle, [{ id: "a", name: "A", graph }], "a");
+    await bundle.store.getState().loadWorkspaces();
+    expect(bundle.store.getState().graph.nodes[0]?.body).toBeUndefined();
+
+    // Simulate an external edit: rewrite the space with the root carrying a body.
+    const root = graph.nodes[0];
+    if (root === undefined) throw new Error("expected a root");
+    const edited: Graph = { nodes: [{ ...root, body: "Внешнее тело" }], edges: [] };
+    await bundle.vault.applyDiff(
+      diffFiles(new Map(), spaceDesiredFiles({ id: "a", name: "A" }, edited, new Set())),
+    );
+
+    await bundle.store.getState().refreshFromDisk();
+    expect(bundle.store.getState().graph.nodes[0]?.body).toBe("Внешнее тело");
+  });
+
+  it("re-points the active workspace and persists it when its space vanishes", async () => {
+    const bundle = makeStore();
+    await seed(
+      bundle,
+      [
+        { id: "a", name: "A" },
+        { id: "b", name: "B" },
+      ],
+      "a",
+    );
+    await bundle.store.getState().loadWorkspaces();
+    expect(bundle.store.getState().activeWorkspaceId).toBe("a");
+
+    // External deletion of the active space.
+    await bundle.vault.deleteSpace("A");
+    await bundle.vault.saveSpaces([{ id: "b", name: "B" }]);
+    bundle.prefs.saveActiveWorkspaceId.mockClear();
+
+    await bundle.store.getState().refreshFromDisk();
+    expect(bundle.store.getState().workspaces.map((w) => w.id)).toEqual(["b"]);
+    expect(bundle.store.getState().activeWorkspaceId).toBe("b");
+    expect(bundle.prefs.saveActiveWorkspaceId).toHaveBeenCalledWith(VAULT_PATH, "b");
+  });
 });
 
 describe("defaultResolveVault", () => {
@@ -1761,11 +1896,16 @@ describe("defaultResolveVault", () => {
     setTauri(false);
   });
 
-  it("uses a localStorage-backed vault in the web build", () => {
+  it("opens the implicit localStorage vault in the web build once a path is set", () => {
     setTauri(false);
-    const resolved = defaultResolveVault(null);
+    const resolved = defaultResolveVault(WEB_VAULT_PATH);
     expect(resolved.vault).not.toBeNull();
     expect(resolved.vaultPath).toBe(WEB_VAULT_PATH);
+  });
+
+  it("starts with no vault in the web build until one is opened", () => {
+    setTauri(false);
+    expect(defaultResolveVault(null)).toEqual({ vault: null, vaultPath: null });
   });
 });
 

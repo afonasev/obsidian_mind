@@ -34,6 +34,9 @@ function firstLetter(name: string): string {
 
 export function WorkspacePanel(): JSX.Element {
   const collapsed = useMindMapStore((state) => state.panelCollapsed);
+  // Without an open vault the panel shows no spaces (the canvas shows the open
+  // invitation) and the refresh action is hidden.
+  const hasVault = useMindMapStore((state) => state.hasVault);
   const workspaces = useMindMapStore((state) => state.workspaces);
   const activeWorkspaceId = useMindMapStore((state) => state.activeWorkspaceId);
   const editingWorkspaceId = useMindMapStore((state) => state.editingWorkspaceId);
@@ -52,6 +55,10 @@ export function WorkspacePanel(): JSX.Element {
 
   function handleToggle(): void {
     void mindMapStore.getState().togglePanel();
+  }
+
+  function handleRefresh(): void {
+    void mindMapStore.getState().refreshFromDisk();
   }
 
   if (collapsed) {
@@ -99,65 +106,82 @@ export function WorkspacePanel(): JSX.Element {
     <div className={styles.panel} style={{ width }}>
       <div className={styles.header}>
         <span className={styles.title}>Пространства</span>
-        <button
-          type="button"
-          className={styles.toggle}
-          onClick={handleToggle}
-          aria-expanded={true}
-          aria-label="Свернуть панель пространств"
-        >
-          «
-        </button>
+        <div className={styles.headerActions}>
+          {hasVault ? (
+            <button
+              type="button"
+              className={styles.refresh}
+              onClick={handleRefresh}
+              aria-label="Перечитать с диска"
+              title="Перечитать с диска"
+            >
+              ⟳
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={styles.toggle}
+            onClick={handleToggle}
+            aria-expanded={true}
+            aria-label="Свернуть панель пространств"
+          >
+            «
+          </button>
+        </div>
       </div>
 
-      <ul className={styles.list}>
-        {workspaces.map((workspace) => {
-          const isActive = workspace.id === activeWorkspaceId;
-          // Active workspace's roots come from the live graph; inactive ones are
-          // read from the cache, which stays put while they are inactive.
-          const roots = isActive
-            ? rootsFromGraph(graph)
-            : (rootsByWorkspace.get(workspace.id) ?? []);
-          return (
-            <WorkspaceItem
-              key={workspace.id}
-              workspace={workspace}
-              isActive={isActive}
-              isEditing={workspace.id === editingWorkspaceId}
-              isMenuOpen={workspace.id === menuOpenId}
-              roots={roots}
-              rootsCollapsed={collapsedWorkspaceRoots.has(workspace.id)}
-              onToggleMenu={() =>
-                setMenuOpenId((current) => (current === workspace.id ? null : workspace.id))
-              }
-              onRequestDelete={() => {
-                setMenuOpenId(null);
-                setPendingDeleteId(workspace.id);
+      {hasVault ? (
+        <>
+          <ul className={styles.list}>
+            {workspaces.map((workspace) => {
+              const isActive = workspace.id === activeWorkspaceId;
+              // Active workspace's roots come from the live graph; inactive ones are
+              // read from the cache, which stays put while they are inactive.
+              const roots = isActive
+                ? rootsFromGraph(graph)
+                : (rootsByWorkspace.get(workspace.id) ?? []);
+              return (
+                <WorkspaceItem
+                  key={workspace.id}
+                  workspace={workspace}
+                  isActive={isActive}
+                  isEditing={workspace.id === editingWorkspaceId}
+                  isMenuOpen={workspace.id === menuOpenId}
+                  roots={roots}
+                  rootsCollapsed={collapsedWorkspaceRoots.has(workspace.id)}
+                  onToggleMenu={() =>
+                    setMenuOpenId((current) => (current === workspace.id ? null : workspace.id))
+                  }
+                  onRequestDelete={() => {
+                    setMenuOpenId(null);
+                    setPendingDeleteId(workspace.id);
+                  }}
+                />
+              );
+            })}
+          </ul>
+
+          <button
+            type="button"
+            className={styles.add}
+            onClick={handleCreate}
+            aria-label="Создать пространство"
+          >
+            +
+          </button>
+
+          {pendingDelete !== null ? (
+            <ConfirmDeleteDialog
+              workspace={pendingDelete}
+              onConfirm={() => {
+                const id = pendingDelete.id;
+                setPendingDeleteId(null);
+                void mindMapStore.getState().deleteWorkspace(id);
               }}
+              onCancel={() => setPendingDeleteId(null)}
             />
-          );
-        })}
-      </ul>
-
-      <button
-        type="button"
-        className={styles.add}
-        onClick={handleCreate}
-        aria-label="Создать пространство"
-      >
-        +
-      </button>
-
-      {pendingDelete !== null ? (
-        <ConfirmDeleteDialog
-          workspace={pendingDelete}
-          onConfirm={() => {
-            const id = pendingDelete.id;
-            setPendingDeleteId(null);
-            void mindMapStore.getState().deleteWorkspace(id);
-          }}
-          onCancel={() => setPendingDeleteId(null)}
-        />
+          ) : null}
+        </>
       ) : null}
 
       <ResizeHandle

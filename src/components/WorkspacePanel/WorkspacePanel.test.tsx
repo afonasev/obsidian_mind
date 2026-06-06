@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DB_NAME } from "../../persistence/db";
 import { mindMapStore } from "../../store/mindmap-store";
 import { WorkspacePanel } from "./WorkspacePanel";
@@ -23,6 +23,7 @@ function resetStore(): void {
       future: [],
       selectedNodeId: null,
       editingNodeId: null,
+      hasVault: true,
       workspaces: [],
       activeWorkspaceId: null,
       editingWorkspaceId: null,
@@ -37,6 +38,7 @@ function resetStore(): void {
 
 beforeEach(async () => {
   await resetDb();
+  localStorage.clear();
   resetStore();
 });
 
@@ -45,6 +47,7 @@ afterEach(async () => {
     await mindMapStore.getState().flush();
   });
   await resetDb();
+  localStorage.clear();
 });
 
 /** Seed `count` named workspaces directly in state, the first one active. */
@@ -71,6 +74,28 @@ describe("WorkspacePanel — list", () => {
     render(<WorkspacePanel />);
     expect(screen.getByLabelText("Создать пространство")).toBeInTheDocument();
     expect(screen.queryAllByRole("menuitem")).toHaveLength(0);
+  });
+});
+
+describe("WorkspacePanel — vault session", () => {
+  it("hides the space list, create and refresh actions when no vault is open", () => {
+    act(() => {
+      mindMapStore.setState({ hasVault: false, workspaces: [], activeWorkspaceId: null });
+    });
+    render(<WorkspacePanel />);
+    expect(screen.queryByLabelText("Создать пространство")).toBeNull();
+    expect(screen.queryByLabelText("Перечитать с диска")).toBeNull();
+  });
+
+  it("shows the refresh action and triggers a disk re-read when a vault is open", async () => {
+    const user = userEvent.setup();
+    seedWorkspaces(["Работа"]);
+    const refreshSpy = vi.spyOn(mindMapStore.getState(), "refreshFromDisk").mockResolvedValue();
+    render(<WorkspacePanel />);
+
+    await user.click(screen.getByLabelText("Перечитать с диска"));
+    expect(refreshSpy).toHaveBeenCalled();
+    refreshSpy.mockRestore();
   });
 });
 
@@ -141,6 +166,14 @@ describe("WorkspacePanel — collapse", () => {
 });
 
 describe("WorkspacePanel — create", () => {
+  // createWorkspace writes a real space folder, so the singleton needs an open
+  // vault. The web build opens the implicit localStorage vault (cleared per test).
+  beforeEach(async () => {
+    await act(async () => {
+      await mindMapStore.getState().openVault();
+    });
+  });
+
   it("creates a workspace, activates it and opens inline name editing", async () => {
     const user = userEvent.setup();
     render(<WorkspacePanel />);

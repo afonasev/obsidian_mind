@@ -20,6 +20,30 @@
   z-index: 4;
 }
 
+/* The no-vault hint carries an action, so it must catch clicks (the bare hint sets
+   pointer-events:none so it never blocks the canvas underneath). */
+.emptyText {
+  margin: 0 0 12px;
+  text-align: center;
+}
+
+.openVault {
+  display: block;
+  margin: 0 auto;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-size: 13px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.openVault:hover {
+  background: var(--color-surface-hover);
+}
+
 /* React Flow paints visible source/target dots and its own selection outline on every node;
    our CloudNode owns its own selection state and we don't want these defaults stacking on top. */
 .canvas :global(.react-flow__handle) {

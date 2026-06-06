@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DB_NAME } from "./persistence/db";
-import { saveActiveWorkspaceId } from "./persistence/repository";
+import { saveActiveWorkspaceId, saveLastVaultPath } from "./persistence/repository";
 import { createLocalStorageVaultFs } from "./persistence/vault/vault-fs";
 import { createVaultStore } from "./persistence/vault/vault-store";
 import { mindMapStore, WEB_VAULT_PATH, WEB_VAULT_STORAGE_KEY } from "./store/mindmap-store";
@@ -21,9 +21,12 @@ beforeEach(async () => {
   await resetDb();
   localStorage.clear();
   // Seed the web (localStorage) vault with one space the app will restore on mount.
+  // The web build now starts NoVault until a vault path is stored, so persist the
+  // implicit web vault path so loadWorkspaces re-opens it automatically.
   const vault = createVaultStore(createLocalStorageVaultFs(WEB_VAULT_STORAGE_KEY));
   await vault.createSpace("Пространство");
   await vault.saveSpaces([{ id: "ws", name: "Пространство" }]);
+  await saveLastVaultPath(WEB_VAULT_PATH);
   await saveActiveWorkspaceId(WEB_VAULT_PATH, "ws");
 });
 
@@ -48,10 +51,11 @@ describe("App", () => {
   it("renders the workspace panel and the mindmap canvas", async () => {
     const { container } = render(<App />);
     expect(container.querySelector(".react-flow")).not.toBeNull();
-    expect(screen.getByLabelText("Создать пространство")).toBeInTheDocument();
+    // The create button appears only once the vault is opened on mount (async load).
     await waitFor(() => {
       expect(mindMapStore.getState().activeWorkspaceId).toBe("ws");
     });
+    expect(screen.getByLabelText("Создать пространство")).toBeInTheDocument();
   });
 
   it("loads the active workspace on mount so root creation works", async () => {

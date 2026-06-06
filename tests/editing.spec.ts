@@ -9,6 +9,8 @@ import { expect, type Page, test } from "@playwright/test";
 async function openWorkspace(page: Page): Promise<void> {
   await page.goto("/");
   await page.waitForSelector(".react-flow__pane");
+  // The web build starts with no vault — open the implicit one before creating spaces.
+  await page.getByRole("button", { name: "Открыть директорию-vault" }).click();
   await page.getByRole("button", { name: "Создать пространство" }).click();
   const input = page.getByLabel("Имя пространства");
   await input.fill("Тест");

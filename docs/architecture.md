@@ -28,8 +28,13 @@ persistence ──▶ domain
 
 1. `src/main.tsx` создаёт React-root и рендерит `App`.
 2. На маунте `App` вызывает `mindMapStore.getState().loadWorkspaces()`.
-3. Стор резолвит активный vault (`resolveVault`: FS-адаптер по `lastVaultPath` в Tauri, иначе localStorage-адаптер в web), читает список пространств (`VaultStore.loadSpaces`) и граф активного пространства (`VaultStore.readSpace` → файлы `.mind/` + `.md` → `Graph` + свёрнутые узлы); активное пространство берётся из app-pref `activeWorkspace:<vaultPath>`.
-4. Канвас подписан на стор через `useMindMapStore` и отрисовывает узлы / рёбра.
+3. Стор резолвит активный vault (`resolveVault`): vault открывается только когда `lastVaultPath !== null` — в Tauri это реальный путь и FS-адаптер, в web — sentinel `WEB_VAULT_PATH` и localStorage-адаптер. На чистом профиле пути нет → `vault === null` → состояние `NoVault` (`hasVault: false`). Иначе читается список пространств (`VaultStore.loadSpaces`) и граф активного пространства (`VaultStore.readSpace` → файлы `.mind/` + `.md` → `Graph` + свёрнутые узлы); активное пространство берётся из app-pref `activeWorkspace:<vaultPath>`.
+4. Канвас подписан на стор через `useMindMapStore` и отрисовывает узлы / рёбра (или приглашение открыть vault, если `hasVault: false`).
+
+### Жизненный цикл сессии vault
+
+- **`NoVault → Loaded`.** `openVault` выбирает путь (нативный пикер в Tauri; неявный `WEB_VAULT_PATH` в web), сохраняет его как `lastVaultPath` и переоткрывает через `loadWorkspaces`. Так последний vault авто-переоткрывается при следующем старте в обеих сборках.
+- **Перечитка с диска.** `refreshFromDisk` (кнопка `⟳` в панели): синхронный `flush` отложенных записей → **пере-резолв адаптера** vault из `lastVaultPath` (localStorage-адаптер кэширует снимок при создании, поэтому без пере-резолва внешние правки не видны; FS-адаптер читает диск и так) → повторное чтение и согласование по `id` (логика reconcile — в `VaultStore.readSpace`: новые `.md` усыновляются, изменённые тела подтягиваются, внешние переименования сохраняют связь, удалённые заметки оставляют узел без тела). Файлового наблюдателя нет — подхват внешних правок только по этой кнопке.
 
 ### Мутация графа
 

@@ -1,5 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
 
+// The web build starts with no vault — open the implicit one before creating spaces.
+async function openVault(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Открыть директорию-vault" }).click();
+  await expect(page.getByRole("button", { name: "Создать пространство" })).toBeVisible();
+}
+
 async function createWorkspace(page: Page, name: string): Promise<void> {
   await page.getByRole("button", { name: "Создать пространство" }).click();
   const input = page.getByLabel("Имя пространства");
@@ -20,6 +26,7 @@ async function addRootNode(page: Page, text: string): Promise<void> {
 test("graphs are independent per workspace and switching changes the canvas", async ({ page }) => {
   await page.goto("/");
   await page.waitForSelector(".react-flow__pane");
+  await openVault(page);
 
   await createWorkspace(page, "Работа");
   await addRootNode(page, "Задача A");
@@ -39,6 +46,7 @@ test("graphs are independent per workspace and switching changes the canvas", as
 test("deleting the active workspace activates a neighbor", async ({ page }) => {
   await page.goto("/");
   await page.waitForSelector(".react-flow__pane");
+  await openVault(page);
 
   await createWorkspace(page, "Первое");
   await createWorkspace(page, "Второе");
@@ -58,6 +66,7 @@ test("deleting the active workspace activates a neighbor", async ({ page }) => {
 test("restart restores the last active workspace and the panel state", async ({ page }) => {
   await page.goto("/");
   await page.waitForSelector(".react-flow__pane");
+  await openVault(page);
 
   await createWorkspace(page, "Память");
   await addRootNode(page, "Узел");

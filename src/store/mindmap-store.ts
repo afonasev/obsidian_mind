@@ -12,7 +12,7 @@ import { createDebouncedSaver, type DebouncedSaver } from "../persistence/deboun
 import * as repository from "../persistence/repository";
 import { createFsVaultFs, createLocalStorageVaultFs } from "../persistence/vault/vault-fs";
 import { createVaultStore, type VaultStore } from "../persistence/vault/vault-store";
-import { isTauri } from "../vault/fs-bridge";
+import { isTauri, selectVaultDirectory } from "../vault/fs-bridge";
 
 // Upper bound on the undo/redo depth. Snapshots are immutable graph references
 // (no cloning), so the cost is one array slot per step — but we still cap it so
@@ -46,6 +46,7 @@ interface History {
  */
 export interface AppPrefs {
   loadLastVaultPath(): Promise<string | null>;
+  saveLastVaultPath(path: string | null): Promise<void>;
   loadActiveWorkspaceId(vaultPath: string): Promise<string | null>;
   saveActiveWorkspaceId(vaultPath: string, workspaceId: string | null): Promise<void>;
   loadPanelCollapsed(): Promise<boolean>;
@@ -73,20 +74,29 @@ export const WEB_VAULT_STORAGE_KEY = "obsidian-mind-web-vault";
 export const WEB_VAULT_PATH = "web";
 
 /**
- * Default vault resolution: in Tauri, open the last vault path over the real FS (or
- * none when no path is set yet — opening a vault is `vault-open-refresh`); in the
- * web build, a localStorage-backed vault so content survives a reload.
+ * Default vault resolution. Both builds start with no vault (NoVault) until one is
+ * opened: in Tauri the last vault path is opened over the real FS; in the web build
+ * there is no folder picker, so a single implicit localStorage vault is opened under
+ * the fixed `WEB_VAULT_PATH`. Either way the vault is resolved only once a path was
+ * stored (`openVault` persists it), so a fresh profile shows the open invitation.
  */
 export function defaultResolveVault(lastVaultPath: string | null): ResolvedVault {
-  if (isTauri()) {
-    return lastVaultPath !== null
-      ? { vault: createVaultStore(createFsVaultFs(lastVaultPath)), vaultPath: lastVaultPath }
-      : { vault: null, vaultPath: null };
+  if (lastVaultPath === null) {
+    return { vault: null, vaultPath: null };
   }
-  return {
-    vault: createVaultStore(createLocalStorageVaultFs(WEB_VAULT_STORAGE_KEY)),
-    vaultPath: WEB_VAULT_PATH,
-  };
+  const fs = isTauri()
+    ? createFsVaultFs(lastVaultPath)
+    : createLocalStorageVaultFs(WEB_VAULT_STORAGE_KEY);
+  return { vault: createVaultStore(fs), vaultPath: lastVaultPath };
+}
+
+/**
+ * Pick a vault path to open: the native folder picker in Tauri, or the single
+ * implicit web vault path otherwise (the web build has no picker). Returns null when
+ * the user cancels the Tauri dialog.
+ */
+export async function defaultPickVaultPath(): Promise<string | null> {
+  return isTauri() ? await selectVaultDirectory() : WEB_VAULT_PATH;
 }
 
 export interface MindMapState {
@@ -109,6 +119,10 @@ export interface MindMapState {
   // Session-only, not persisted. `navCursor` is -1 when the history is empty.
   readonly navHistory: readonly NavEntry[];
   readonly navCursor: number;
+  // Whether a vault is currently open (session state Loaded vs NoVault). NoVault
+  // (no vault open) is distinct from "vault open, but no spaces yet": the former
+  // shows the open-vault invitation, the latter the create-space hint.
+  readonly hasVault: boolean;
   // Workspace registry. The visible graph/history always belongs to the active one.
   readonly workspaces: readonly Workspace[];
   readonly activeWorkspaceId: string | null;
@@ -134,6 +148,11 @@ export interface MindMapState {
   // repeated click on the same node still re-triggers the canvas's centering effect.
   readonly reveal: { readonly nodeId: NodeId; readonly seq: number } | null;
   loadWorkspaces(): Promise<void>;
+  // Choose a vault directory and open it (NoVault → Loaded). A no-op if cancelled.
+  openVault(): Promise<void>;
+  // Re-read the open vault from disk and reconcile it with the current state by id:
+  // flush pending writes, then rebuild spaces/roots/graph from the vault.
+  refreshFromDisk(): Promise<void>;
   createWorkspace(): Promise<void>;
   commitWorkspaceName(id: string, name: string): Promise<void>;
   cancelWorkspaceName(id: string): Promise<void>;
@@ -189,6 +208,9 @@ interface CreateMindMapStoreOptions {
   // Resolve the active vault from the last vault path (tests inject an in-memory
   // VaultStore here). Defaults to FS-in-Tauri / localStorage-in-web.
   readonly resolveVault?: (lastVaultPath: string | null) => ResolvedVault;
+  // Choose a vault path to open (tests inject a fixed path). Defaults to the native
+  // folder picker in Tauri / the implicit web vault path otherwise.
+  readonly pickVaultPath?: () => Promise<string | null>;
   readonly createSaver?: (save: (graph: Graph) => Promise<void>) => DebouncedSaver;
 }
 
@@ -226,6 +248,7 @@ const EMPTY_HISTORY: History = { past: [], future: [] };
 export function createMindMapStore(options: CreateMindMapStoreOptions = {}): MindMapStore {
   const prefs: AppPrefs = options.prefs ?? repository;
   const resolveVault = options.resolveVault ?? defaultResolveVault;
+  const pickVaultPath = options.pickVaultPath ?? defaultPickVaultPath;
   const createSaver = options.createSaver ?? createDebouncedSaver;
 
   // The active vault's content store and its prefs path, resolved on loadWorkspaces.
@@ -249,6 +272,59 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         workspace.name === ""
           ? (freshFolders.get(workspace.id) ?? DEFAULT_WORKSPACE_NAME)
           : workspace.name,
+    };
+  }
+
+  /**
+   * Read the whole open vault into the workspace/graph slice of the state. Shared by
+   * the initial load and refresh-from-disk: it (re)builds the workspace list, picks
+   * the active workspace (`preferredActiveId` if it still exists, else the first, else
+   * none), reads the active space's graph, and resets `lastWritten` so the next save
+   * diffs against the freshly read files. With no vault open it yields the empty slice.
+   */
+  async function readVault(
+    preferredActiveId: string | null,
+  ): Promise<
+    Pick<
+      MindMapState,
+      | "hasVault"
+      | "workspaces"
+      | "activeWorkspaceId"
+      | "graph"
+      | "collapsedNodeIds"
+      | "rootsByWorkspace"
+    >
+  > {
+    let workspaces: readonly Workspace[] = [];
+    let activeWorkspaceId: string | null = null;
+    let graph = graphOps.createEmpty();
+    let collapsedNodes: readonly NodeId[] = [];
+    const rootsByWorkspace = new Map<string, readonly PanelRoot[]>();
+    lastWritten = new Map();
+    if (vault !== null) {
+      const spaces = await vault.loadSpaces();
+      workspaces = spaces.map(toWorkspace);
+      activeWorkspaceId =
+        preferredActiveId !== null && spaces.some((s) => s.id === preferredActiveId)
+          ? preferredActiveId
+          : (spaces[0]?.id ?? null);
+      for (const space of spaces) {
+        const result = await vault.readSpace(space);
+        rootsByWorkspace.set(space.id, rootsFromGraph(result.graph));
+        if (space.id === activeWorkspaceId) {
+          graph = result.graph;
+          collapsedNodes = [...result.collapsed];
+          lastWritten = spaceDesiredFiles(space, result.graph, result.collapsed);
+        }
+      }
+    }
+    return {
+      hasVault: vault !== null,
+      workspaces,
+      activeWorkspaceId,
+      graph,
+      collapsedNodeIds: new Set(collapsedNodes),
+      rootsByWorkspace,
     };
   }
 
@@ -469,6 +545,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       future: [],
       navHistory: [],
       navCursor: -1,
+      hasVault: false,
       workspaces: [],
       activeWorkspaceId: null,
       editingWorkspaceId: null,
@@ -501,51 +578,27 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         vault = resolved.vault;
         vaultPath = resolved.vaultPath;
 
-        let workspaces: readonly Workspace[] = [];
-        let activeWorkspaceId: string | null = null;
-        let graph = graphOps.createEmpty();
-        let collapsedNodes: readonly NodeId[] = [];
-        const rootsByWorkspace = new Map<string, readonly PanelRoot[]>();
-        lastWritten = new Map();
-
-        if (vault !== null) {
-          const spaces = await vault.loadSpaces();
-          workspaces = spaces.map(toWorkspace);
-          const stored = vaultPath !== null ? await prefs.loadActiveWorkspaceId(vaultPath) : null;
-          // Restore the stored active space, else default to the first one so the
-          // canvas shows content (spec: render the active space's graph at start).
-          activeWorkspaceId =
-            stored !== null && spaces.some((s) => s.id === stored)
-              ? stored
-              : (spaces[0]?.id ?? null);
-          for (const space of spaces) {
-            const result = await vault.readSpace(space);
-            rootsByWorkspace.set(space.id, rootsFromGraph(result.graph));
-            if (space.id === activeWorkspaceId) {
-              graph = result.graph;
-              collapsedNodes = [...result.collapsed];
-              lastWritten = spaceDesiredFiles(space, result.graph, result.collapsed);
-            }
-          }
-          if (vaultPath !== null && activeWorkspaceId !== stored) {
-            await prefs.saveActiveWorkspaceId(vaultPath, activeWorkspaceId);
-          }
+        // Restore the stored active space, else default to the first one so the
+        // canvas shows content (spec: render the active space's graph at start).
+        const stored =
+          vault !== null && vaultPath !== null
+            ? await prefs.loadActiveWorkspaceId(vaultPath)
+            : null;
+        const slice = await readVault(stored);
+        if (vaultPath !== null && slice.activeWorkspaceId !== stored) {
+          await prefs.saveActiveWorkspaceId(vaultPath, slice.activeWorkspaceId);
         }
 
         clearTransient();
         histories.clear();
         set({
-          workspaces,
-          activeWorkspaceId,
+          ...slice,
           panelCollapsed,
           editorCollapsed,
           panelWidth: storedPanelWidth ?? DEFAULT_PANEL_WIDTH,
           editorWidth: storedEditorWidth ?? DEFAULT_EDITOR_WIDTH,
-          rootsByWorkspace,
           collapsedWorkspaceRoots: new Set(collapsedRoots),
-          collapsedNodeIds: new Set(collapsedNodes),
           reveal: null,
-          graph,
           past: [],
           future: [],
           navHistory: [],
@@ -554,6 +607,55 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
           editingNodeId: null,
           editingWorkspaceId: null,
         });
+      },
+
+      async openVault() {
+        const path = await pickVaultPath();
+        // User cancelled the picker — keep the current session untouched.
+        if (path === null) {
+          return;
+        }
+        // Flush any pending writes of a currently-open vault before switching.
+        await saver.flush();
+        await prefs.saveLastVaultPath(path);
+        // loadWorkspaces re-resolves the vault from the freshly stored path.
+        await get().loadWorkspaces();
+      },
+
+      async refreshFromDisk() {
+        // Only meaningful with a vault open; the button is hidden otherwise.
+        if (vault === null) {
+          return;
+        }
+        // Flush first so unsaved local edits are not lost, then reconcile by id:
+        // readVault re-reads the vault, and `vault-storage`'s readSpace links notes
+        // to nodes by frontmatter id (adopting new notes, dropping bodies of deleted
+        // ones, following external renames). Keep the active workspace if it survives.
+        await saver.flush();
+        // Re-open the vault from disk so external edits are actually seen: the web
+        // adapter snapshots storage at creation, so a stale instance would re-read its
+        // own cache; re-resolving gives a fresh read (the FS adapter reads disk anyway).
+        const resolved = resolveVault(vaultPath);
+        vault = resolved.vault;
+        vaultPath = resolved.vaultPath;
+        const current = get().activeWorkspaceId;
+        const slice = await readVault(current);
+        clearTransient();
+        histories.clear();
+        set({
+          ...slice,
+          reveal: null,
+          past: [],
+          future: [],
+          navHistory: [],
+          navCursor: -1,
+          selectedNodeId: null,
+          editingNodeId: null,
+          editingWorkspaceId: null,
+        });
+        if (vaultPath !== null && slice.activeWorkspaceId !== current) {
+          await prefs.saveActiveWorkspaceId(vaultPath, slice.activeWorkspaceId);
+        }
       },
 
       async createWorkspace() {
@@ -577,6 +679,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         clearTransient();
         lastWritten = new Map();
         set({
+          hasVault: true,
           workspaces,
           activeWorkspaceId: workspace.id,
           editingWorkspaceId: workspace.id,
