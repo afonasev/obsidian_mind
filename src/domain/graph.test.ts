@@ -3,6 +3,7 @@ import {
   addChild,
   addRoot,
   createEmpty,
+  detachAsRoot,
   extractSubtree,
   moveNode,
   pasteSubtree,
@@ -513,5 +514,44 @@ describe("reparentSubtree", () => {
     expect(
       reparentSubtree(graph, { nodeId: aId, newParentId: childId, position: { x: 0, y: 0 } }),
     ).toBe(graph);
+  });
+});
+
+describe("detachAsRoot", () => {
+  function tree(): { graph: Graph; rootId: NodeId; aId: NodeId; childId: NodeId } {
+    const root = addRoot(createEmpty(), { position: { x: 0, y: 0 }, text: "R" });
+    const a = addChild(root.graph, {
+      parentId: root.nodeId,
+      position: { x: 100, y: 0 },
+      text: "A",
+    });
+    const child = addChild(a.graph, { parentId: a.nodeId, position: { x: 200, y: 0 }, text: "C" });
+    return {
+      graph: child.graph,
+      rootId: root.nodeId,
+      aId: a.nodeId,
+      childId: child.nodeId,
+    };
+  }
+
+  it("turns the node into a root, drops its incoming edge, and keeps the subtree connected", () => {
+    const { graph, aId, childId } = tree();
+    const next = detachAsRoot(graph, { nodeId: aId, position: { x: 9, y: 9 } });
+    expect(next.nodes.find((n) => n.id === aId)?.parentId).toBeNull();
+    expect(next.nodes.find((n) => n.id === aId)?.position).toEqual({ x: 9, y: 9 });
+    expect(next.edges.filter((e) => e.target === aId)).toHaveLength(0);
+    // Ребёнок по-прежнему ссылается на откреплённый узел — поддерево связно.
+    expect(next.nodes.find((n) => n.id === childId)?.parentId).toBe(aId);
+    expect(next.edges.find((e) => e.target === childId)?.source).toBe(aId);
+  });
+
+  it("returns the same graph for a node that is already a root", () => {
+    const { graph, rootId } = tree();
+    expect(detachAsRoot(graph, { nodeId: rootId, position: { x: 0, y: 0 } })).toBe(graph);
+  });
+
+  it("returns the same graph for an unknown node", () => {
+    const { graph } = tree();
+    expect(detachAsRoot(graph, { nodeId: "ghost", position: { x: 0, y: 0 } })).toBe(graph);
   });
 });

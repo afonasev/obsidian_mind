@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   appendChildY,
+  DETACH_GAP_MULTIPLIER,
   estimateNodeHeight,
   estimateNodeWidth,
   FONT_SCALE_MAX,
+  isFarFromParent,
+  LAYOUT_HGAP,
   LAYOUT_HSTEP,
   LAYOUT_MAX_WIDTH,
   LAYOUT_MIN_WIDTH,
@@ -233,6 +236,63 @@ describe("layout", () => {
     expect(out.nodes.find((n) => n.id === "R")?.position).toEqual({ x: 10, y: 999 });
   });
 
+  it("separates two overlapping root subtrees vertically, lower-priority root moves down", () => {
+    // Both roots and their single children sit at the same y, so their bounding
+    // boxes overlap. r1 (smaller y tiebreak by id) keeps its place; r2 is pushed
+    // down until the boxes no longer overlap.
+    const g = graphOf(
+      node("r1", null, 0, 0),
+      node("c1", "r1", 1, 0),
+      node("r2", null, 0, 0),
+      node("c2", "r2", 1, 0),
+    );
+    const out = layout(g, EMPTY);
+    const r1 = out.nodes.find((n) => n.id === "r1");
+    const r2 = out.nodes.find((n) => n.id === "r2");
+    expect(r1?.position.y).toBe(0);
+    expect(r2?.position.y).toBeGreaterThan(0);
+    // r2's whole subtree moves with it: its child keeps the same y as the root.
+    const c2 = out.nodes.find((n) => n.id === "c2");
+    expect(c2?.position.y).toBe(r2?.position.y);
+  });
+
+  it("does not move already separated roots on a repeat layout (idempotence)", () => {
+    const g = graphOf(
+      node("r1", null, 0, 0),
+      node("c1", "r1", 1, 0),
+      node("r2", null, 0, 0),
+      node("c2", "r2", 1, 0),
+    );
+    const once = layout(g, EMPTY);
+    const twice = layout(once, EMPTY);
+    for (const n of once.nodes) {
+      const after = twice.nodes.find((m) => m.id === n.id);
+      expect(after?.position).toEqual(n.position);
+    }
+  });
+
+  it("separates overlapping collapsed roots, shifting their unpositioned children too", () => {
+    // Two collapsed roots at the same spot overlap by their own boxes. The lower
+    // priority one moves down; its (unlaid-out) child shifts from its stored
+    // position by the same delta via the stored-position fallback.
+    // Ids inserted out of sorted order ("rb" before "ra") so the deterministic sort
+    // also exercises the id-tiebreaker's other branch (a.id > b.id).
+    const g = graphOf(
+      node("rb", null, 0, 0),
+      node("cb", "rb", 5, 5),
+      node("ra", null, 0, 0),
+      node("ca", "ra", 5, 5),
+    );
+    const out = layout(g, new Set(["rb", "ra"]));
+    // "ra" sorts first (smaller id), so "rb" is the lower-priority root that moves.
+    const r2 = out.nodes.find((n) => n.id === "rb");
+    const c2 = out.nodes.find((n) => n.id === "cb");
+    const delta = (r2?.position.y ?? 0) - 0;
+    expect(delta).toBeGreaterThan(0);
+    // The collapsed child kept its x and moved down by the same delta as its root.
+    expect(c2?.position).toEqual({ x: 5, y: 5 + delta });
+  });
+
   it("restores descendant layout once the node is expanded again", () => {
     const g = graphOf(
       node("r", null, 0, 0),
@@ -350,6 +410,32 @@ describe("sideOf", () => {
     };
     const g: Graph = { nodes: [orphan], edges: [] };
     expect(sideOf(g, "orphan")).toBeNull();
+  });
+});
+
+describe("isFarFromParent", () => {
+  it("is false for a child resting at its normal slot distance", () => {
+    const parent = node("r", null, 0, 0, "root");
+    const parentWidth = estimateNodeWidth("root", true);
+    // Normal child slot: parentWidth + LAYOUT_HGAP to the right, same y.
+    const child = node("c", "r", parentWidth + LAYOUT_HGAP, 0);
+    expect(isFarFromParent(child, parent)).toBe(false);
+  });
+
+  it("is false right at the threshold and true just beyond it", () => {
+    const parent = node("r", null, 0, 0, "root");
+    const parentWidth = estimateNodeWidth("root", true);
+    const threshold = parentWidth + LAYOUT_HGAP + DETACH_GAP_MULTIPLIER * LAYOUT_HGAP;
+    const atThreshold = node("c", "r", threshold, 0);
+    const beyond = node("c", "r", threshold + 1, 0);
+    expect(isFarFromParent(atThreshold, parent)).toBe(false);
+    expect(isFarFromParent(beyond, parent)).toBe(true);
+  });
+
+  it("is true for a node dragged several gaps away (diagonal distance counts)", () => {
+    const parent = node("r", null, 0, 0, "root");
+    const far = node("c", "r", 1000, 1000);
+    expect(isFarFromParent(far, parent)).toBe(true);
   });
 });
 

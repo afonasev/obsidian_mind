@@ -19,6 +19,7 @@ import {
   handleNodeDragStop,
   handlePaneClick,
   handlePaneDoubleClick,
+  isDetachCandidate,
   toRFEdges,
   toRFNodes,
 } from "./Canvas";
@@ -46,6 +47,7 @@ function resetStore(): void {
     mindMapStore.getState().selectNode(null);
     mindMapStore.getState().stopEditing();
     mindMapStore.getState().setDropTarget(null);
+    mindMapStore.getState().setDetachCandidate(null);
     // Node creation is guarded behind an active workspace — seed one for the tests.
     mindMapStore.setState({
       activeWorkspaceId: "ws",
@@ -1031,6 +1033,59 @@ describe("handleNodeDrag / handleNodeDragStop", () => {
     expect(mindMapStore.getState().graph.nodes[0]?.position).toEqual({ x: 33, y: 44 });
     expect(mindMapStore.getState().dropTargetId).toBeNull();
   });
+
+  // Root "R" → estimateNodeWidth clamps to 120, so the detach threshold is
+  // 120 + LAYOUT_HGAP(80) + 2·80 = 360. A drop > 360 away detaches; ≤ 360 sticks.
+  function seedRootWithChild(): { rootId: string; childId: string } {
+    let rootId = "";
+    let childId = "";
+    act(() => {
+      rootId = mindMapStore.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+      mindMapStore.getState().stopEditing();
+      childId = mindMapStore.getState().addChild({ parentId: rootId, position: { x: 200, y: 0 } });
+      mindMapStore.getState().stopEditing();
+    });
+    return { rootId, childId };
+  }
+
+  it("handleNodeDragStop detaches a child dropped far from its parent", () => {
+    const { childId } = seedRootWithChild();
+    handleNodeDragStop(null, rfNodeAt(childId, 0, 600));
+    expect(mindMapStore.getState().graph.nodes.find((n) => n.id === childId)?.parentId).toBeNull();
+    expect(mindMapStore.getState().detachCandidateId).toBeNull();
+  });
+
+  it("handleNodeDragStop keeps a child dropped near its parent attached", () => {
+    const { rootId, childId } = seedRootWithChild();
+    handleNodeDragStop(null, rfNodeAt(childId, 220, 10));
+    expect(mindMapStore.getState().graph.nodes.find((n) => n.id === childId)?.parentId).toBe(
+      rootId,
+    );
+  });
+
+  it("handleNodeDrag flags then clears the detach candidate across the threshold", () => {
+    const { childId } = seedRootWithChild();
+    handleNodeDrag(null, rfNodeAt(childId, 0, 600));
+    expect(mindMapStore.getState().detachCandidateId).toBe(childId);
+    handleNodeDrag(null, rfNodeAt(childId, 220, 10));
+    expect(mindMapStore.getState().detachCandidateId).toBeNull();
+  });
+
+  it("isDetachCandidate respects roots, distance, and missing nodes", () => {
+    const graph: Graph = {
+      nodes: [
+        { id: "r", text: "R", parentId: null, position: { x: 0, y: 0 } },
+        { id: "c", text: "C", parentId: "r", position: { x: 200, y: 0 } },
+        { id: "orphan", text: "O", parentId: "gone", position: { x: 0, y: 0 } },
+      ],
+      edges: [{ id: "e", source: "r", target: "c" }],
+    };
+    expect(isDetachCandidate(graph, "r", { x: 0, y: 999 })).toBe(false); // a root cannot detach
+    expect(isDetachCandidate(graph, "c", { x: 0, y: 600 })).toBe(true); // far enough
+    expect(isDetachCandidate(graph, "c", { x: 210, y: 0 })).toBe(false); // too near
+    expect(isDetachCandidate(graph, "orphan", { x: 0, y: 600 })).toBe(false); // parent missing
+    expect(isDetachCandidate(graph, "ghost", { x: 0, y: 0 })).toBe(false); // unknown node
+  });
 });
 
 describe("toRFNodes", () => {
@@ -1098,6 +1153,7 @@ describe("toRFEdges", () => {
         edges: [{ id: "e", source: "p", target: "c" }],
       },
       new Set(),
+      null,
     );
     expect(edges).toEqual([
       {
@@ -1120,6 +1176,7 @@ describe("toRFEdges", () => {
         edges: [{ id: "e", source: "p", target: "c" }],
       },
       new Set(),
+      null,
     );
     expect(edges).toEqual([
       {
@@ -1142,6 +1199,7 @@ describe("toRFEdges", () => {
         ],
       },
       new Set(),
+      null,
     );
     expect(edges).toEqual([]);
   });
@@ -1156,7 +1214,28 @@ describe("toRFEdges", () => {
         edges: [{ id: "e", source: "p", target: "c" }],
       },
       new Set(["c"]),
+      null,
     );
     expect(edges).toEqual([]);
+  });
+
+  it("marks the edge into the detach candidate as tearing, others stay normal", () => {
+    const graph: Graph = {
+      nodes: [
+        { id: "p", text: "", position: { x: 0, y: 0 }, parentId: null },
+        { id: "c", text: "", position: { x: 100, y: 0 }, parentId: "p" },
+        { id: "d", text: "", position: { x: 100, y: 100 }, parentId: "p" },
+      ],
+      edges: [
+        { id: "e-c", source: "p", target: "c" },
+        { id: "e-d", source: "p", target: "d" },
+      ],
+    };
+    const tearing = toRFEdges(graph, new Set(), "c");
+    expect(tearing.find((e) => e.id === "e-c")?.className).toMatch(/tearing/);
+    expect(tearing.find((e) => e.id === "e-d")?.className).toBeUndefined();
+    // With no candidate, no edge is tearing.
+    const calm = toRFEdges(graph, new Set(), null);
+    expect(calm.every((e) => e.className === undefined)).toBe(true);
   });
 });

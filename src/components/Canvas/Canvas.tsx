@@ -14,7 +14,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { type JSX, type MouseEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { subtreeIds } from "../../domain/graph";
-import { estimateNodeHeight, estimateNodeWidth } from "../../domain/layout";
+import { estimateNodeHeight, estimateNodeWidth, isFarFromParent } from "../../domain/layout";
 import { findNeighbor, type NavigationDirection } from "../../domain/navigation";
 import type { Graph, MindEdge, MindNode, NodeId, Position } from "../../domain/types";
 import { mindMapStore, useMindMapStore } from "../../store/mindmap-store";
@@ -42,6 +42,7 @@ function CanvasInner(): JSX.Element {
   const hasActiveWorkspace = useMindMapStore((state) => state.activeWorkspaceId !== null);
   const reveal = useMindMapStore((state) => state.reveal);
   const collapsedNodeIds = useMindMapStore((state) => state.collapsedNodeIds);
+  const detachCandidateId = useMindMapStore((state) => state.detachCandidateId);
   const { screenToFlowPosition, fitView } = useReactFlow();
   const { theme, toggle } = useTheme();
   const [isHelpOpen, setIsHelpOpen] = useState(false);
@@ -66,7 +67,10 @@ function CanvasInner(): JSX.Element {
     () => toRFNodes(graph, selectedNodeId, hidden),
     [graph, selectedNodeId, hidden],
   );
-  const edges = useMemo(() => toRFEdges(graph, hidden), [graph, hidden]);
+  const edges = useMemo(
+    () => toRFEdges(graph, hidden, detachCandidateId),
+    [graph, hidden, detachCandidateId],
+  );
 
   const onNodesChange = useCallback<OnNodesChange<CloudNodeType>>(applyNodesChange, []);
   const onNodeClick = useCallback<NodeMouseHandler<CloudNodeType>>(handleNodeClick, []);
@@ -232,9 +236,34 @@ export function findDropTarget(
   return null;
 }
 
+/**
+ * Whether dropping `nodeId` at `position` would detach it into a new root: it must
+ * have a parent (roots cannot detach) and be dragged past the "far" threshold. The
+ * dragged position overrides the node's stored one — the graph may not have caught
+ * up to the in-flight drag yet.
+ */
+export function isDetachCandidate(graph: Graph, nodeId: NodeId, position: Position): boolean {
+  const node = graph.nodes.find((n) => n.id === nodeId);
+  if (node === undefined || node.parentId === null) {
+    return false;
+  }
+  const parent = graph.nodes.find((n) => n.id === node.parentId);
+  if (parent === undefined) {
+    return false;
+  }
+  return isFarFromParent({ ...node, position }, parent);
+}
+
 export function handleNodeDrag(_event: unknown, node: CloudNodeType): void {
-  const graph = mindMapStore.getState().graph;
-  mindMapStore.getState().setDropTarget(findDropTarget(graph, node.id, node.position));
+  const state = mindMapStore.getState();
+  const graph = state.graph;
+  const target = findDropTarget(graph, node.id, node.position);
+  state.setDropTarget(target);
+  // With no re-parent target, flag a detach candidate once the drag passes the
+  // threshold so the parent edge can render as "tearing"; clear it otherwise.
+  state.setDetachCandidate(
+    target === null && isDetachCandidate(graph, node.id, node.position) ? node.id : null,
+  );
 }
 
 export function handleNodeDragStop(_event: unknown, node: CloudNodeType): void {
@@ -242,10 +271,14 @@ export function handleNodeDragStop(_event: unknown, node: CloudNodeType): void {
   const target = state.dropTargetId;
   if (target !== null) {
     state.reparent(node.id, target);
+  } else if (isDetachCandidate(state.graph, node.id, node.position)) {
+    // No target + non-root dragged far → detach into a new root.
+    state.detach(node.id, node.position);
   } else {
     state.dropNode(node.id, node.position);
   }
   state.setDropTarget(null);
+  state.setDetachCandidate(null);
 }
 
 export function handleNodeClick(_event: unknown, node: CloudNodeType): void {
@@ -442,7 +475,11 @@ export function toRFNodes(
   });
 }
 
-export function toRFEdges(graph: Graph, hidden: ReadonlySet<NodeId>): RFEdge[] {
+export function toRFEdges(
+  graph: Graph,
+  hidden: ReadonlySet<NodeId>,
+  detachCandidateId: NodeId | null,
+): RFEdge[] {
   const positions = new Map(graph.nodes.map((node) => [node.id, node.position]));
   return graph.edges.flatMap((edge: MindEdge): RFEdge[] => {
     // Drop edges into hidden descendants of a collapsed node.
@@ -464,6 +501,9 @@ export function toRFEdges(graph: Graph, hidden: ReadonlySet<NodeId>): RFEdge[] {
         target: edge.target,
         sourceHandle: childIsRight ? "source-right" : "source-left",
         targetHandle: childIsRight ? "target-left" : "target-right",
+        // The edge into a node that has crossed the detach threshold renders
+        // "tearing" (dashed/faded) — a cue that releasing now will detach it.
+        ...(edge.target === detachCandidateId ? { className: styles.tearing } : {}),
       },
     ];
   });

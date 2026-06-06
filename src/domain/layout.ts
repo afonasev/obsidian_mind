@@ -83,6 +83,31 @@ export function estimateNodeHeight(
   return (visualLines * lineHeight + NODE_VERTICAL_PADDING + NODE_BORDER) * HEIGHT_SAFETY;
 }
 
+// How many extra gaps beyond a child's normal slot a node must be dragged to count
+// as "far" from its parent (the K in the threshold below). A child resting at its
+// normal slot sits at parentWidth + LAYOUT_HGAP; we require K more gaps so a node at
+// rest never trips the predicate. Exported so callers/tests share the same value.
+export const DETACH_GAP_MULTIPLIER = 2;
+
+/**
+ * Whether `node` has been dragged far enough from `parent` to count as detached.
+ * The normal child slot distance is parentWidth + LAYOUT_HGAP; we add
+ * DETACH_GAP_MULTIPLIER more gaps so a child at rest stays below the threshold and
+ * only a deliberate drag far away trips it. Distance is Euclidean.
+ */
+export function isFarFromParent(node: MindNode, parent: MindNode): boolean {
+  const dx = node.position.x - parent.position.x;
+  const dy = node.position.y - parent.position.y;
+  const distance = Math.hypot(dx, dy);
+  const parentWidth = estimateNodeWidth(
+    parent.text,
+    parent.parentId === null,
+    parent.style?.fontScale,
+  );
+  const threshold = parentWidth + LAYOUT_HGAP + DETACH_GAP_MULTIPLIER * LAYOUT_HGAP;
+  return distance > threshold;
+}
+
 export type Side = "left" | "right";
 
 /**
@@ -119,10 +144,12 @@ export function layout(graph: Graph, collapsed: ReadonlySet<NodeId>): Graph {
   const childrenOf = buildChildrenIndex(graph);
   const positions = new Map<NodeId, Position>();
 
+  const roots: MindNode[] = [];
   for (const root of graph.nodes) {
     if (root.parentId !== null) {
       continue;
     }
+    roots.push(root);
     positions.set(root.id, root.position);
     // A collapsed root hides both sides — its children get no positions, so the
     // canvas drops them just like any other hidden descendant.
@@ -136,6 +163,8 @@ export function layout(graph: Graph, collapsed: ReadonlySet<NodeId>): Graph {
     layoutSide(root.position, rootWidth, right, "right", childrenOf, positions, collapsed);
     layoutSide(root.position, rootWidth, left, "left", childrenOf, positions, collapsed);
   }
+
+  separateRoots(roots, childrenOf, positions);
 
   return {
     nodes: graph.nodes.map((node) => {
@@ -185,6 +214,116 @@ function buildChildrenIndex(graph: Graph): Map<NodeId, MindNode[]> {
     }
   }
   return map;
+}
+
+// Axis-aligned bounding box of a root's whole subtree, in layout coordinates.
+interface BBox {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+}
+
+// Tiny separation added beyond the exact overlap so two boxes end up touching
+// rather than sharing an edge (which would still count as an overlap next pass).
+const ROOT_SEPARATION_MARGIN = 1;
+
+// All node ids belonging to a root's subtree (the root plus every descendant),
+// found by walking the children index. Used to shift a whole subtree together.
+function subtreeNodes(root: MindNode, childrenOf: Map<NodeId, MindNode[]>): MindNode[] {
+  // Recursive walk over the children index; collects the root plus all descendants.
+  const result: MindNode[] = [];
+  const visit = (node: MindNode): void => {
+    result.push(node);
+    for (const child of childrenOf.get(node.id) ?? []) {
+      visit(child);
+    }
+  };
+  visit(root);
+  return result;
+}
+
+// Union of each subtree node's box, using laid-out positions where available and
+// the node's stored position otherwise (e.g. a collapsed root whose children have
+// no entry in `positions`).
+function subtreeBBox(nodes: readonly MindNode[], positions: Map<NodeId, Position>): BBox {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const node of nodes) {
+    const pos = positions.get(node.id) ?? node.position;
+    const isRoot = node.parentId === null;
+    const width = estimateNodeWidth(node.text, isRoot, node.style?.fontScale);
+    const height = estimateNodeHeight(node.text, isRoot, node.style?.fontScale);
+    minX = Math.min(minX, pos.x);
+    minY = Math.min(minY, pos.y);
+    maxX = Math.max(maxX, pos.x + width);
+    maxY = Math.max(maxY, pos.y + height);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function boxesOverlap(a: BBox, b: BBox): boolean {
+  return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
+}
+
+/**
+ * Final layout pass: keep root subtrees from overlapping. In a deterministic order
+ * (by current y, then id) each root that overlaps an already-accepted subtree is
+ * shifted straight down — together with its whole subtree — by exactly the vertical
+ * overlap plus a tiny margin, repeating until it clears every accepted box. Only
+ * vertical shifting; horizontal (manual) root placement is never touched. Because
+ * the shift is exactly the overlap, an already-separated layout shifts by zero, so
+ * a repeated `layout()` is idempotent.
+ */
+function separateRoots(
+  roots: readonly MindNode[],
+  childrenOf: Map<NodeId, MindNode[]>,
+  positions: Map<NodeId, Position>,
+): void {
+  // Roots have not been shifted yet at this point, so their position in `positions`
+  // equals their stored position — sort by the stored y, then id for stability.
+  const ordered = [...roots].sort((a, b) => {
+    if (a.position.y !== b.position.y) {
+      return a.position.y - b.position.y;
+    }
+    return a.id < b.id ? -1 : 1;
+  });
+
+  const accepted: BBox[] = [];
+  for (const root of ordered) {
+    const nodes = subtreeNodes(root, childrenOf);
+    let box = subtreeBBox(nodes, positions);
+    // A box may move into a previously-accepted box after a shift, so re-scan the
+    // whole accepted set until a full pass finds no overlap (iterate to stability).
+    let shifted = true;
+    while (shifted) {
+      shifted = false;
+      for (const other of accepted) {
+        if (boxesOverlap(box, other)) {
+          // Push our top edge just below the other box's bottom. The other box is
+          // already accepted (higher priority), so we always move down.
+          const delta = other.maxY - box.minY + ROOT_SEPARATION_MARGIN;
+          shiftSubtree(nodes, delta, positions);
+          box = subtreeBBox(nodes, positions);
+          shifted = true;
+        }
+      }
+    }
+    accepted.push(box);
+  }
+}
+
+function shiftSubtree(
+  nodes: readonly MindNode[],
+  dy: number,
+  positions: Map<NodeId, Position>,
+): void {
+  for (const node of nodes) {
+    const pos = positions.get(node.id) ?? node.position;
+    positions.set(node.id, { x: pos.x, y: pos.y + dy });
+  }
 }
 
 function layoutSide(

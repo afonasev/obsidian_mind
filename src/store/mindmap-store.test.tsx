@@ -659,6 +659,48 @@ describe("reparent / drop target", () => {
   });
 });
 
+describe("detach / detach candidate", () => {
+  it("setDetachCandidate sets, keeps (guarded) and clears the flagged node", () => {
+    const store = activeStore();
+    const id = store.getState().addRoot({ position: { x: 0, y: 0 } });
+    store.getState().stopEditing();
+    store.getState().setDetachCandidate(id);
+    expect(store.getState().detachCandidateId).toBe(id);
+    store.getState().setDetachCandidate(id);
+    expect(store.getState().detachCandidateId).toBe(id);
+    store.getState().setDetachCandidate(null);
+    expect(store.getState().detachCandidateId).toBeNull();
+  });
+
+  it("detach turns a child into a root in a single undo step", () => {
+    const store = activeStore();
+    const root = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+    store.getState().stopEditing();
+    const child = store.getState().addChild({ parentId: root, position: { x: 200, y: 0 } });
+    store.getState().stopEditing();
+
+    store.getState().detach(child, { x: 0, y: 600 });
+    const detached = store.getState().graph.nodes.find((n) => n.id === child);
+    expect(detached?.parentId).toBeNull();
+    // The edge from the old parent is gone.
+    expect(store.getState().graph.edges.some((e) => e.target === child)).toBe(false);
+    expect(store.getState().selectedNodeId).toBe(child);
+
+    store.getState().undo();
+    expect(store.getState().graph.nodes.find((n) => n.id === child)?.parentId).toBe(root);
+  });
+
+  it("detach is a no-op without history for a root node", () => {
+    const store = activeStore();
+    const root = store.getState().addRoot({ position: { x: 0, y: 0 }, text: "R" });
+    store.getState().stopEditing();
+    const before = store.getState().past.length;
+    store.getState().detach(root, { x: 100, y: 100 });
+    expect(store.getState().past.length).toBe(before);
+    expect(store.getState().graph.nodes.find((n) => n.id === root)?.parentId).toBeNull();
+  });
+});
+
 describe("loadWorkspaces", () => {
   it("restores list, active workspace, panel state and graph", async () => {
     const { store, persistence } = makeStore();

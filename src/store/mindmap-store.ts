@@ -66,6 +66,10 @@ export interface MindMapState {
   // Node currently highlighted as a re-parent drop target while another node is
   // dragged over it. Transient UI state — not part of the undo history.
   readonly dropTargetId: NodeId | null;
+  // Node being dragged that has passed the detach threshold (far from its parent,
+  // no drop target) — releasing now would detach it. Drives the "tearing" edge
+  // style. Transient UI state — not part of the undo history.
+  readonly detachCandidateId: NodeId | null;
   // Undo/redo stacks of past/future graph snapshots for the ACTIVE workspace.
   // Inactive workspaces' histories live in a closure Map (see `histories`).
   readonly past: readonly Graph[];
@@ -135,8 +139,10 @@ export interface MindMapState {
   resetNodeColor(nodeId: NodeId): void;
   moveNode(nodeId: NodeId, position: Position): void;
   dropNode(nodeId: NodeId, position: Position): void;
+  detach(nodeId: NodeId, position: Position): void;
   reparent(nodeId: NodeId, newParentId: NodeId): void;
   setDropTarget(nodeId: NodeId | null): void;
+  setDetachCandidate(nodeId: NodeId | null): void;
   selectNode(nodeId: NodeId | null): void;
   startEditing(nodeId: NodeId): void;
   stopEditing(): void;
@@ -379,6 +385,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       selectedNodeId: null,
       editingNodeId: null,
       dropTargetId: null,
+      detachCandidateId: null,
       past: [],
       future: [],
       navHistory: [],
@@ -883,6 +890,22 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         coalesceKey = null;
       },
 
+      detach(nodeId, position) {
+        // End of a drag far from the parent onto empty canvas: detach the node into
+        // a new root (its subtree follows) and re-flow — the root-collision pass in
+        // layout() then nudges the fresh root clear of other branches. Coalesces with
+        // the drag's in-flight moves so the whole gesture is one undo step; an invalid
+        // detach (unknown / already a root) is a no-op with no history.
+        const prev = get().graph;
+        const detached = graphOps.detachAsRoot(prev, { nodeId, position });
+        if (detached === prev) {
+          return;
+        }
+        commit(relayout(detached), `move:${nodeId}`);
+        coalesceKey = null;
+        set({ selectedNodeId: nodeId, editingNodeId: null });
+      },
+
       reparent(nodeId, newParentId) {
         // Re-attach a node under a new parent (drag-onto-node). Coalesces with the
         // drag's in-flight moves so the whole gesture is a single undo step.
@@ -904,6 +927,12 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       setDropTarget(nodeId) {
         if (get().dropTargetId !== nodeId) {
           set({ dropTargetId: nodeId });
+        }
+      },
+
+      setDetachCandidate(nodeId) {
+        if (get().detachCandidateId !== nodeId) {
+          set({ detachCandidateId: nodeId });
         }
       },
 

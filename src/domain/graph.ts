@@ -298,6 +298,31 @@ export function reparentSubtree(graph: Graph, input: ReparentInput): Graph {
   };
 }
 
+interface DetachInput {
+  readonly nodeId: NodeId;
+  readonly position: Position;
+}
+
+/**
+ * Открепить `nodeId` от родителя, сделав его новым корнем своей ветки. Возвращает
+ * ТУ ЖЕ ссылку на граф, если открепление невозможно — узел неизвестен или уже
+ * корень (`parentId === null`), — чтобы вызывающий мог пропустить no-op. При
+ * успехе: `parentId → null`, новая `position`, удаление входящего ребра
+ * (`target === nodeId`). Дети сохраняют свои `parentId`, поэтому поддерево
+ * остаётся связным.
+ */
+export function detachAsRoot(graph: Graph, input: DetachInput): Graph {
+  const { nodeId, position } = input;
+  const node = graph.nodes.find((n) => n.id === nodeId);
+  if (node === undefined || node.parentId === null) {
+    return graph;
+  }
+  return {
+    nodes: graph.nodes.map((n) => (n.id === nodeId ? { ...n, parentId: null, position } : n)),
+    edges: graph.edges.filter((e) => e.target !== nodeId),
+  };
+}
+
 /** Ids of `rootId` and all its descendants (empty set if `rootId` is unknown). */
 export function subtreeIds(graph: Graph, rootId: NodeId): Set<NodeId> {
   if (!graph.nodes.some((node) => node.id === rootId)) {
