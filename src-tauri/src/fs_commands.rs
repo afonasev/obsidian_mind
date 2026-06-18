@@ -57,10 +57,14 @@ fn canonical_root(vault_root: &str) -> Result<PathBuf, AppError> {
 /// Резолвит `rel_path` относительно `vault_root` и проверяет, что результат —
 /// потомок (или сам) канонического корня.
 ///
-/// Для существующих путей канонизируется сам результат; для создаваемых —
-/// канонизируется родитель, а финальный компонент присоединяется к нему. Это
-/// закрывает побег через `..` и симлинки, ведущие за пределы vault: за
-/// симлинком наружу мы не следуем — канонический путь не будет потомком корня.
+/// Подтверждение confinement не должно зависеть от того, какие предки уже есть на
+/// диске: иначе чтение пути внутри ещё не созданного каталога (например `.mind/`
+/// свежего vault) ошибочно трактуется как побег. Поэтому `..`/абсолютный путь
+/// отвергаются заранее по компонентам, а затем канонизируется самый глубокий
+/// существующий предок — если он внутри корня, путь безопасен: отсутствующий
+/// «хвост» не может быть симлинком (его нет на диске), поэтому увести операцию за
+/// пределы vault он не способен. Несуществующий путь возвращается как есть —
+/// `NotFound` поднимет уже сама файловая операция.
 pub fn resolve_within(vault_root: &str, rel_path: &str) -> Result<PathBuf, AppError> {
   let root = canonical_root(vault_root)?;
 
@@ -71,31 +75,31 @@ pub fn resolve_within(vault_root: &str, rel_path: &str) -> Result<PathBuf, AppEr
     return Err(AppError::PathEscape);
   }
 
-  let joined = root.join(rel);
-
-  let canonical = match joined.canonicalize() {
-    Ok(path) => path,
-    Err(_) => {
-      // Путь ещё не существует (создаваемый) — канонизируем родителя и
-      // присоединяем последний компонент.
-      let parent = joined.parent().ok_or(AppError::PathEscape)?;
-      let file_name = match joined.components().next_back() {
-        Some(Component::Normal(name)) => name.to_owned(),
-        // `.`, `..`, корень и т. п. как финальный компонент недопустимы.
-        _ => return Err(AppError::PathEscape),
-      };
-      let canonical_parent = parent
-        .canonicalize()
-        .map_err(|_| AppError::PathEscape)?;
-      canonical_parent.join(file_name)
+  // `..` (и прочие не-Normal компоненты, кроме безобидного `.`) запрещены до любых
+  // обращений к ФС — так отсутствие предка не путается с побегом через `..`.
+  for component in rel.components() {
+    match component {
+      Component::Normal(_) | Component::CurDir => {}
+      _ => return Err(AppError::PathEscape),
     }
-  };
-
-  if !canonical.starts_with(&root) {
-    return Err(AppError::PathEscape);
   }
 
-  Ok(canonical)
+  let joined = root.join(rel);
+
+  // Поднимаемся до ближайшего существующего предка и канонизируем его (раскрывая
+  // симлинки существующего префикса). Если этот реальный префикс внутри корня —
+  // путь confined. `parent()` не упрётся в пустоту: канонический корень всегда
+  // существует и канонизируется, так что цикл завершится не позже него.
+  let mut ancestor = joined.as_path();
+  loop {
+    if let Ok(canonical) = ancestor.canonicalize() {
+      if !canonical.starts_with(&root) {
+        return Err(AppError::PathEscape);
+      }
+      return Ok(joined);
+    }
+    ancestor = ancestor.parent().ok_or(AppError::PathEscape)?;
+  }
 }
 
 /// Преобразует абсолютный путь внутри корня в относительный с прямыми слешами.
@@ -226,6 +230,40 @@ mod tests {
 
     assert_eq!(resolved, canonical_root.join("new.md"));
     std::fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn resolves_path_under_missing_ancestor() {
+    // Регрессия: открытие vault без созданного `.mind/` не должно падать как
+    // PathEscape. Путь, у которого отсутствует лишь предок, обязан резолвиться —
+    // `NotFound` затем поднимет сама файловая операция, а не резолвер.
+    let root = temp_dir();
+    let canonical_root = root.canonicalize().expect("canonicalize root");
+
+    let resolved = resolve_within(root.to_str().expect("utf8 root"), ".mind/spaces.yaml")
+      .expect("resolve under missing ancestor");
+
+    assert_eq!(resolved, canonical_root.join(".mind").join("spaces.yaml"));
+    std::fs::remove_dir_all(&root).ok();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn rejects_missing_leaf_under_symlinked_ancestor() {
+    use std::os::unix::fs::symlink;
+
+    let outside = temp_dir();
+    let root = temp_dir();
+    // Симлинк-директория внутри vault, ведущая наружу.
+    symlink(&outside, root.join("link")).expect("create dir symlink");
+
+    // Ещё не существующий файл под этим симлинком всё равно отвергается:
+    // существующий предок (сам симлинк) резолвится за пределы корня.
+    let result = resolve_within(root.to_str().expect("utf8 root"), "link/new.md");
+
+    assert!(matches!(result, Err(AppError::PathEscape)));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&outside).ok();
   }
 
   #[test]
