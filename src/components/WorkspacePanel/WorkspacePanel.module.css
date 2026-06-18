@@ -55,15 +55,34 @@
 
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 12px;
+}
+
+.headerTitles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Let a long vault name truncate instead of pushing the actions off-row. */
+  min-width: 0;
 }
 
 .title {
   font-size: 13px;
   font-weight: 700;
   color: var(--color-fg);
+}
+
+/* Open vault name, shown under «Пространства» a touch larger as the panel's subject. */
+.vaultName {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .headerActions {

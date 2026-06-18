@@ -99,6 +99,15 @@ export async function defaultPickVaultPath(): Promise<string | null> {
   return isTauri() ? await selectVaultDirectory() : WEB_VAULT_PATH;
 }
 
+/** Display name of a vault = the last segment of its path (works for `/` and `\`). */
+export function vaultDisplayName(path: string | null): string | null {
+  if (path === null) {
+    return null;
+  }
+  const segments = path.split(/[/\\]+/).filter((segment) => segment.length > 0);
+  return segments[segments.length - 1] ?? path;
+}
+
 export interface MindMapState {
   readonly graph: Graph;
   readonly selectedNodeId: NodeId | null;
@@ -123,6 +132,9 @@ export interface MindMapState {
   // (no vault open) is distinct from "vault open, but no spaces yet": the former
   // shows the open-vault invitation, the latter the create-space hint.
   readonly hasVault: boolean;
+  // Display name of the open vault (last path segment), shown in the panel header.
+  // null when no vault is open.
+  readonly vaultName: string | null;
   // Workspace registry. The visible graph/history always belongs to the active one.
   readonly workspaces: readonly Workspace[];
   readonly activeWorkspaceId: string | null;
@@ -288,6 +300,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
     Pick<
       MindMapState,
       | "hasVault"
+      | "vaultName"
       | "workspaces"
       | "activeWorkspaceId"
       | "graph"
@@ -320,6 +333,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
     }
     return {
       hasVault: vault !== null,
+      vaultName: vault !== null ? vaultDisplayName(vaultPath) : null,
       workspaces,
       activeWorkspaceId,
       graph,
@@ -546,6 +560,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
       navHistory: [],
       navCursor: -1,
       hasVault: false,
+      vaultName: null,
       workspaces: [],
       activeWorkspaceId: null,
       editingWorkspaceId: null,
@@ -680,6 +695,7 @@ export function createMindMapStore(options: CreateMindMapStoreOptions = {}): Min
         lastWritten = new Map();
         set({
           hasVault: true,
+          vaultName: vaultDisplayName(vaultPath),
           workspaces,
           activeWorkspaceId: workspace.id,
           editingWorkspaceId: workspace.id,

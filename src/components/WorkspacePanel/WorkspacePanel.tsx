@@ -37,6 +37,7 @@ export function WorkspacePanel(): JSX.Element {
   // Without an open vault the panel shows no spaces (the canvas shows the open
   // invitation) and the refresh action is hidden.
   const hasVault = useMindMapStore((state) => state.hasVault);
+  const vaultName = useMindMapStore((state) => state.vaultName);
   const workspaces = useMindMapStore((state) => state.workspaces);
   const activeWorkspaceId = useMindMapStore((state) => state.activeWorkspaceId);
   const editingWorkspaceId = useMindMapStore((state) => state.editingWorkspaceId);
@@ -105,7 +106,14 @@ export function WorkspacePanel(): JSX.Element {
   return (
     <div className={styles.panel} style={{ width }}>
       <div className={styles.header}>
-        <span className={styles.title}>Пространства</span>
+        <div className={styles.headerTitles}>
+          <span className={styles.title}>Пространства</span>
+          {vaultName !== null ? (
+            <span className={styles.vaultName} title={vaultName}>
+              {vaultName}
+            </span>
+          ) : null}
+        </div>
         <div className={styles.headerActions}>
           {hasVault ? (
             <button

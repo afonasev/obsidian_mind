@@ -22,6 +22,7 @@ import {
   type MindMapStore,
   mindMapStore,
   useMindMapStore,
+  vaultDisplayName,
   WEB_VAULT_PATH,
 } from "./mindmap-store";
 
@@ -1776,6 +1777,7 @@ describe("openVault", () => {
     await store.getState().openVault();
     expect(prefs.saveLastVaultPath).toHaveBeenCalledWith("/picked");
     expect(store.getState().hasVault).toBe(true);
+    expect(store.getState().vaultName).toBe(VAULT_PATH);
     expect(store.getState().workspaces.map((w) => w.name)).toEqual(["A"]);
   });
 
@@ -1790,6 +1792,21 @@ describe("openVault", () => {
     await store.getState().openVault();
     expect(prefs.saveLastVaultPath).not.toHaveBeenCalled();
     expect(store.getState().hasVault).toBe(false);
+    expect(store.getState().vaultName).toBeNull();
+  });
+});
+
+describe("vaultDisplayName", () => {
+  it("returns null when no vault path is given", () => {
+    expect(vaultDisplayName(null)).toBeNull();
+  });
+
+  it("returns the last path segment, ignoring a trailing separator", () => {
+    expect(vaultDisplayName("/Users/me/Projects/Brain/")).toBe("Brain");
+  });
+
+  it("falls back to the raw path when it has no real segment", () => {
+    expect(vaultDisplayName("/")).toBe("/");
   });
 });
 

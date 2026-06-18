@@ -24,6 +24,7 @@ function resetStore(): void {
       selectedNodeId: null,
       editingNodeId: null,
       hasVault: true,
+      vaultName: null,
       workspaces: [],
       activeWorkspaceId: null,
       editingWorkspaceId: null,
@@ -85,6 +86,14 @@ describe("WorkspacePanel — vault session", () => {
     render(<WorkspacePanel />);
     expect(screen.queryByLabelText("Создать пространство")).toBeNull();
     expect(screen.queryByLabelText("Перечитать с диска")).toBeNull();
+  });
+
+  it("shows the open vault name under the title when a vault is open", () => {
+    act(() => {
+      mindMapStore.setState({ vaultName: "Brain" });
+    });
+    render(<WorkspacePanel />);
+    expect(screen.getByText("Brain")).toBeInTheDocument();
   });
 
   it("shows the refresh action and triggers a disk re-read when a vault is open", async () => {
